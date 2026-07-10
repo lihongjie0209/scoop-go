@@ -1,0 +1,28 @@
+# Binaries
+scoop-go
+scoop-go.exe
+*.exe
+*.test
+
+# Temp / Test dirs
+testscoop*/
+test-scoop*/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+
+# Claude
+.claude/
+audit-findings.json
+fix_*.py
+*.output
+AUDIT_SUMMARY.md

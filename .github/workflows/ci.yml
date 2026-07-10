@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -v -count=1
+
+  build:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+          - goos: windows
+            goarch: arm64
+            ext: .exe
+          - goos: linux
+            goarch: amd64
+            ext: ""
+          - goos: darwin
+            goarch: amd64
+            ext: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Build shim binary
+        run: GOOS=windows GOARCH=amd64 go build -o pkg/shim/shim.exe ./internal/shimbinary/
+        if: matrix.goos == 'windows'
+
+      - name: Build scoop-go
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          DATE="$(date -u +%Y-%m-%d)"
+          go build -ldflags="-X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.BuildDate=$DATE' -X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.Version=$VERSION'" -o "scoop-go-$VERSION-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" ./cmd/scoop/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scoop-go-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: scoop-go-*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scoop-go-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: sha256sum scoop-go-* > checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            scoop-go-*
+            checksums.txt
+          generate_release_notes: true
