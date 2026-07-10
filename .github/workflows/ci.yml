@@ -37,15 +37,6 @@ jobs:
           - goos: windows
             goarch: amd64
             ext: .exe
-          - goos: windows
-            goarch: arm64
-            ext: .exe
-          - goos: linux
-            goarch: amd64
-            ext: ""
-          - goos: darwin
-            goarch: amd64
-            ext: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -56,8 +47,7 @@ jobs:
           cache: true
 
       - name: Build shim binary
-        run: GOOS=windows GOARCH=amd64 go build -o pkg/shim/shim.exe ./internal/shimbinary/
-        if: matrix.goos == 'windows'
+        run: go build -o pkg/shim/shim.exe ./internal/shimbinary/
 
       - name: Build scoop-go
         env:
@@ -66,13 +56,13 @@ jobs:
         run: |
           VERSION="${{ github.ref_name }}"
           DATE="$(date -u +%Y-%m-%d)"
-          go build -ldflags="-X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.BuildDate=$DATE' -X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.Version=$VERSION'" -o "scoop-go-$VERSION-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" ./cmd/scoop/
+          go build -ldflags="-X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.BuildDate=$DATE' -X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.Version=$VERSION'" -o "scoop-go-$VERSION-windows-amd64.exe" ./cmd/scoop/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: scoop-go-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: scoop-go-*
+          name: scoop-go-windows-amd64
+          path: scoop-go-*.exe
 
   release:
     needs: build
