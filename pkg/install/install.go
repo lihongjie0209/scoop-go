@@ -535,12 +535,16 @@ func (e *Engine) runInstaller(ctx context.Context, m *manifest.Manifest, dir str
 				installHelper("innounp")
 			}
 		}
-		psCmd := powerShellCompatibilityPreamble() +
+		psCmd := fmt.Sprintf(
+			powerShellCompatibilityPreamble() +
+			"$appsdir = '%s'; $bucketsdir = '%s'; $scoopdir = '%s'; $cachedir = '%s'; $shimsdir = '%s';" +
 			"function Expand-DarkArchive{param($Path,$DestinationPath,[switch]$Removal)try{& dark -nologo -x $DestinationPath $Path}catch{throw}}" +
 			"function Expand-InnoArchive{param($Path,$DestinationPath,$ExtractDir,[switch]$Removal)try{& innounp -x -d $DestinationPath $Path -y}catch{throw}}" +
 			"function Expand-MsiArchive{param($Path,$DestinationPath,$ExtractDir,[switch]$Removal)try{$sd=join-path $DestinationPath SourceDir;msiexec /a $Path /qn (\"TARGETDIR=\"+$sd);if(test-path $sd){gci $sd|cp -dest $DestinationPath -re -force;ri $sd -re -fo}}catch{throw}}" +
 			"function Invoke-ExternalCommand{$e=$null;$a=@();$i=0;while($i -lt $args.Count){if($args[$i]-eq\"-Path\"-or$args[$i]-eq\"-FilePath\"){$e=$args[++$i]}elseif($args[$i]-eq\"-ArgumentList\"-or$args[$i]-eq\"-Args\"){$a=$args[++$i]};$i++};if(!$e){$e=$args[0]};& $e @a;if($LASTEXITCODE){throw}}" +
-			fullScript
+			fullScript,
+			app.Dirs().AppsDir, app.Dirs().BucketsDir, app.Dirs().ScoopDir,
+			app.Dirs().CacheDir, app.Dirs().ShimsDir)
 		app.LogDebug("Running installer script")
 		cmd := exec.Command("powershell.exe", "-NoProfile", "-Ex", "Unrestricted", "-Command", psCmd)
 		output, err := cmd.CombinedOutput()
