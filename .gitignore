@@ -26,3 +26,4 @@ audit-findings.json
 fix_*.py
 *.output
 AUDIT_SUMMARY.md
+*~
