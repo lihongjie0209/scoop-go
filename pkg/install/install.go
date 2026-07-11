@@ -465,8 +465,8 @@ func powerShellCompatibilityPreamble() string {
 	return fmt.Sprintf(
 		"function ensure($Path){New-Item -ItemType Directory -Force -Path $Path};"+
 			"function shim($Path,$Global,$Name,$ShimArgs){& '%s' shim add $Name $Path $ShimArgs;if($LASTEXITCODE){throw 'shim creation failed'}};"+
-			"function Expand-DarkArchive{param($Path,$DestinationPath,$Removal)try{& dark -nologo -x $DestinationPath $Path}catch{throw}};"+
-			"function Expand-InnoArchive{param($Path,$DestinationPath,$ExtractDir,$Removal)try{& innounp -x -d $DestinationPath $Path -y}catch{throw}};"+
+			"function Expand-DarkArchive{param($Path,$DestinationPath,[switch]$Removal)try{& dark -nologo -x $DestinationPath $Path}catch{throw}};"+
+			"function Expand-InnoArchive{param($Path,$DestinationPath,$ExtractDir,[switch]$Removal)try{& innounp -x -d $DestinationPath $Path -y}catch{throw}};"+
 			"function Expand-MsiArchive{param($Path,$DestinationPath,$ExtractDir,[switch]$Removal)try{$d=$DestinationPath;if($ExtractDir){$d=$DestinationPath+'\\_tmp'};msiexec /a $Path /qn 'TARGETDIR='+$d+'\\SourceDir';if($ExtractDir-and(test-path($d+'\\SourceDir\\'+$ExtractDir))){cp -re ($d+'\\SourceDir\\'+$ExtractDir+'\\*') $DestinationPath;ri $d -re -fo}elseif(test-path($d+'\\SourceDir')){gci ($d+'\\SourceDir')|cp -dest $DestinationPath -re -force;ri ($d+'\\SourceDir')-re -fo};if($Removal){ri $Path -fo}}catch{throw}};"+
 			"function Invoke-ExternalCommand{$e=$null;$a=@();$i=0;while($i -lt $args.Count){if($args[$i]-eq\"-Path\"-or$args[$i]-eq\"-FilePath\"){$e=$args[++$i]}elseif($args[$i]-eq\"-ArgumentList\"-or$args[$i]-eq\"-Args\"){$a=$args[++$i]};$i++};if(!$e){$e=$args[0]};& $e @a;if($LASTEXITCODE){throw}};",
 		exe,
@@ -530,8 +530,8 @@ func (e *Engine) runInstaller(ctx context.Context, m *manifest.Manifest, dir str
 			}
 		}
 		psCmd := powerShellCompatibilityPreamble() +
-			"function Expand-DarkArchive{param($Path,$DestinationPath,$Removal)try{& dark -nologo -x $DestinationPath $Path}catch{throw}}" +
-			"function Expand-InnoArchive{param($Path,$DestinationPath,$ExtractDir,$Removal)try{& innounp -x -d $DestinationPath $Path -y}catch{throw}}" +
+			"function Expand-DarkArchive{param($Path,$DestinationPath,[switch]$Removal)try{& dark -nologo -x $DestinationPath $Path}catch{throw}}" +
+			"function Expand-InnoArchive{param($Path,$DestinationPath,$ExtractDir,[switch]$Removal)try{& innounp -x -d $DestinationPath $Path -y}catch{throw}}" +
 			"function Expand-MsiArchive{param($Path,$DestinationPath,$ExtractDir,[switch]$Removal)try{$sd=join-path $DestinationPath SourceDir;msiexec /a $Path /qn (\"TARGETDIR=\"+$sd);if(test-path $sd){gci $sd|cp -dest $DestinationPath -re -force;ri $sd -re -fo}}catch{throw}}" +
 			"function Invoke-ExternalCommand{$e=$null;$a=@();$i=0;while($i -lt $args.Count){if($args[$i]-eq\"-Path\"-or$args[$i]-eq\"-FilePath\"){$e=$args[++$i]}elseif($args[$i]-eq\"-ArgumentList\"-or$args[$i]-eq\"-Args\"){$a=$args[++$i]};$i++};if(!$e){$e=$args[0]};& $e @a;if($LASTEXITCODE){throw}}" +
 			fullScript
