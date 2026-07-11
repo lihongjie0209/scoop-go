@@ -453,19 +453,33 @@ func (e *Engine) runInstaller(ctx context.Context, m *manifest.Manifest, dir str
 	// precedes) a file-based installer. Each command supports $dir, $version,
 	// and $global variable substitution.
 	if len(inst.Script) > 0 {
-		for i, line := range inst.Script {
-			for k, v := range substitutions {
-				line = strings.ReplaceAll(line, k, v)
+		fullScript := strings.Join(inst.Script, "\n")
+		for k, v := range substitutions {
+			fullScript = strings.ReplaceAll(fullScript, k, v)
+		}
+		if strings.Contains(fullScript, "Expand-DarkArchive") {
+			if _, err := exec.LookPath("dark"); err != nil {
+				installHelper("dark")
 			}
-			app.LogDebug("Running installer script [%d/%d]: %s", i+1, len(inst.Script), line)
-			cmd := exec.Command("powershell.exe", "-NoProfile", "-Ex", "Unrestricted", "-Command", line)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				return fmt.Errorf("installer script failed: %w\nOutput: %s", err, string(output))
+		}
+		if strings.Contains(fullScript, "Expand-InnoArchive") {
+			if _, err := exec.LookPath("innounp"); err != nil {
+				installHelper("innounp")
 			}
-			if len(output) > 0 {
-				fmt.Print(string(output))
-			}
+		}
+		psCmd := "function Expand-DarkArchive($P,$D){try{& dark -nologo -x $D $P}catch{throw}}" +
+			"function Expand-InnoArchive($P,$D){try{& innounp -x -d $D $P}catch{throw}}" +
+			"function Expand-MsiArchive($P,$D){try{msiexec /a $P /qn TARGETDIR=$(join-path $D SourceDir);$sd=join-path $D SourceDir;if(test-path $sd){gci $sd|cp -dest $D -re -force;ri $sd -re -fo}}catch{throw}}" +
+			"function Invoke-ExternalCommand($E,$A){try{& $E $A;if($LASTEXITCODE){throw}}catch{throw}}" +
+			fullScript
+		app.LogDebug("Running installer script")
+		cmd := exec.Command("powershell.exe", "-NoProfile", "-Ex", "Unrestricted", "-Command", psCmd)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("installer script failed: %w\nOutput: %s", err, string(output))
+		}
+		if len(output) > 0 {
+			fmt.Print(string(output))
 		}
 		// Script-only installers have no file to clean up
 		if inst.File == "" {
@@ -1236,4 +1250,21 @@ func copyDir(dst, src string) error {
 		}
 	}
 	return nil
+}
+func installHelper(pkg string) {
+	fmt.Printf("This app requires '%s' for extraction.\n", pkg)
+	fmt.Printf("Install '%s' via Scoop? [Y/n]: ", pkg)
+	var resp string
+	fmt.Scanln(&resp)
+	if resp != "" && resp != "Y" && resp != "y" && resp != "yes" {
+		app.LogWarn("Skipping. Install later: scoop install %s", pkg)
+		return
+	}
+	app.LogInfo("Installing '%s'...", pkg)
+	c := exec.Command(os.Args[0], "install", pkg)
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	if err := c.Run(); err != nil {
+		app.LogWarn("Failed to install '%s': %v", pkg, err)
+	}
 }
