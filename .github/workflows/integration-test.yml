@@ -1,0 +1,107 @@
+name: Integration Test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # weekly on Monday
+
+jobs:
+  integration-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Build shim + scoop-go
+        shell: bash
+        run: |
+          go build -o pkg/shim/shim.exe ./internal/shimbinary/
+          go build -ldflags="-X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.BuildDate=$(date -u +%Y-%m-%d)' -X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.Version=ci-test'" -o scoop-go.exe ./cmd/scoop/
+
+      - name: Clone test buckets (shallow)
+        shell: bash
+        run: |
+          mkdir -p ~/scoop/buckets
+          git clone --depth 1 --single-branch --no-tags https://github.com/ScoopInstaller/Main.git ~/scoop/buckets/main 2>&1 | tail -2
+          git clone --depth 1 --single-branch --no-tags https://github.com/ScoopInstaller/Extras.git ~/scoop/buckets/extras 2>&1 | tail -2
+          echo "Buckets cloned"
+          echo "main: $(ls ~/scoop/buckets/main/bucket/*.json 2>/dev/null | wc -l) manifests"
+          echo "extras: $(ls ~/scoop/buckets/extras/bucket/*.json 2>/dev/null | wc -l) manifests"
+
+      - name: Run integration tests
+        shell: pwsh
+        run: |
+          $scoop = ".\scoop-go.exe"
+          $results = @()
+
+          # Test packages grouped by format type
+          $testPackages = @(
+            # zip + bin
+            @{name="fd";      type="zip+bin"},
+            @{name="jq";      type="zip+single"},
+            @{name="aria2";   type="zip+bin"},
+            @{name="which";   type="zip+subdir"},
+            @{name="lazygit"; type="zip+tar.gz"},
+            @{name="youtube-dl"; type="7z+py"},
+            @{name="htop";    type="tar.gz"},
+            @{name="ripgrep";  type="zip+env"},
+            @{name="ag";       type="zip+bin"},
+            @{name="peco";     type="zip+bin"},
+            @{name="diffutils"; type="tar.xz"},
+            @{name="touch";    type="zip"},
+            @{name="less";     type="zip"},
+            @{name="composer"; type="phar"},
+            @{name="bat";      type="zip+persist"},
+            @{name="bandizip"; type="7z"},
+            @{name="vcredist"; type="exe"},
+            @{name="innounp";  type="7z+innounp"},
+            @{name="dark";     type="zip"},
+            @{name="nuget";    type="exe"},
+            @{name="protobuf"; type="zip"},
+            @{name="gzip";     type="zip"},
+            @{name="unzip";    type="zip"},
+            @{name="openssl";  type="msi"},
+            @{name="ruby";     type="zip+installer"}
+          )
+
+          $total = $testPackages.Count
+          $passed = 0
+          $failed = 0
+          $failures = @()
+
+          foreach ($pkg in $testPackages) {
+            Write-Host "`n=== Testing: $($pkg.name) ($($pkg.type)) ===" -ForegroundColor Cyan
+            $output = & $scoop install $($pkg.name) 2>&1 | Out-String
+            $success = $LASTEXITCODE -eq 0
+
+            if ($success) {
+              Write-Host "  PASS" -ForegroundColor Green
+              $passed++
+              & $scoop uninstall $($pkg.name) 2>&1 | Out-Null
+            } else {
+              Write-Host "  FAIL" -ForegroundColor Red
+              $failed++
+              $failures += "$($pkg.name) ($($pkg.type))"
+              $brief = ($output -split "`n" | Where-Object { $_ -match "Error:|ERROR" }) -join "; "
+              Write-Host "  Error: $brief" -ForegroundColor Red
+              # Clean up failed install dirs
+              Remove-Item -Recurse -Force "$env:USERPROFILE\scoop\apps\$($pkg.name)" -ErrorAction SilentlyContinue
+              Remove-Item -Recurse -Force "$env:USERPROFILE\scoop\cache\$($pkg.name)*" -ErrorAction SilentlyContinue
+            }
+          }
+
+          Write-Host "`n========================================" -ForegroundColor Cyan
+          Write-Host "Integration Test Results:" -ForegroundColor Cyan
+          Write-Host "  Total:  $total" -ForegroundColor White
+          Write-Host "  Passed: $passed" -ForegroundColor Green
+          Write-Host "  Failed: $failed" -ForegroundColor Red
+          if ($failures.Count -gt 0) {
+            Write-Host "`nFailed packages:" -ForegroundColor Red
+            $failures | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+          }
+
+          if ($failed -gt 0) { exit 1 }
