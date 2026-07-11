@@ -1,0 +1,110 @@
+name: Retry Failed
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: retry-failed
+  cancel-in-progress: true
+
+jobs:
+  retry:
+    strategy:
+      matrix:
+        group: [0,1,2,3,4,5,6,7]
+      fail-fast: false
+    name: Batch ${{ matrix.group }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Build
+        shell: bash
+        run: |
+          go build -o pkg/shim/shim.exe ./internal/shimbinary/
+          go build -ldflags="-X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.BuildDate=$(date -u +%Y-%m-%d)' -X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.Version=retry'" -o scoop-go.exe ./cmd/scoop/
+
+      - name: Clone main bucket
+        shell: bash
+        run: |
+          mkdir -p ~/scoop/buckets
+          git clone --depth 1 --single-branch --no-tags https://github.com/ScoopInstaller/Main.git ~/scoop/buckets/main 2>&1 | tail -1
+
+      - name: Create results dir
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path results | Out-Null
+
+      - name: Test batch ${{ matrix.group }}
+        shell: pwsh
+        run: |
+          $group = ${{ matrix.group }}
+          $totalGroups = 8
+          $scoop = ".\scoop-go.exe"
+
+          # Previously failed packages (214 total, split into 8 groups)
+          $all = @(
+            "ab","algol68g","alist","android-clt","ant","antigravity-cli","apache","apngasm","autoit",
+            "avro-tools","aws-sam-cli","azure-functions-core-tools","azure-ps","beef","bfg","biber",
+            "binutils","bochs","boost","btop","btop-lhm","bun","busybox","busybox-lean","cacert","caddy",
+            "camunda-operate","castxml","cc65","cdrtools","cfr","chezscheme","chkcpu","chronograf",
+            "chroot","clink-completions","clink-flex-prompt","cmder-full","concourse-fly","coq",
+            "cormanlisp","crc","cuda","dos2unix","dosbox","dotnet-sdk","eac3to","elan","elm","elvish",
+            "emplace","erlang","espanso","exercism","far","fastfetch","fciv","ffmpeg","ffmpeg-essentials",
+            "ffmpeg-shared","file","fontreg","gallery-dl","get-iplayer","ghc","ghostscript","gifski",
+            "git-annex","git-up","glow","go-ipfs","go-jsonnet","goaccess","goreleaser","groovy",
+            "gsmartcontrol","gsudo","gzip","hadoop","helmfile","hugo","hwinfo","innounp","invoke-build",
+            "isx","jabba","jdtls","jhead","julia","kafka","kafka-exporter","keepass","kompose","krb5",
+            "ktx-software","lame","latex","lazydocker","legit","lobster","lua","lychee","m4",
+            "mailsend-go","mamba","mathpix-snipping-tool","mc","mdq","mercurial","microsoft-coreutils",
+            "microsoft-coreutils-lean","miktex","miniconda3","mkvtoolnix","mls-software-openssh","mongosh",
+            "mono","msival2","mujs","nano","nasm","ncftp","netcat","netpbm","nettle","nghttp2","nmap",
+            "octave","omnisharp","openjdk","openssh","openssl","openvpn","optipng","opus-tools","pandoc",
+            "pest","pkg-config","plantuml","poppler","postgresql","protobuf","proxify","pulseaudio",
+            "putty","qemu-img","qemu","r","rancher","rclone","reaper","redir","restic","ripgrep-all",
+            "rocky-tux","ruby","rustup","samba","sbcl","scala","shellcheck","shfmt","sigcheck",
+            "signing-party","smartmontools","sniffnet","snyk-cli","sonar-scanner","sqlc","sqldeveloper",
+            "ssh-agent","stackless","stress","sumatrapdf","sylpheed","sysinternals","tarmac","task",
+            "tcpdump","tectonic","telluride","terraform","tesseract","texlive","tokei","tomee","tor",
+            "trash","tree","trufflehog","typeset","uncrustify","unison","unxutils","vala","vagrant",
+            "vcpkg","vcredist","vivliostyle","vk","wget","win32yank","windows-sdk","winscp","winpython",
+            "wintun-dll","wixtoolset","wkhtmltopdf","wp-cli","x265","xz","yedit","yori","yregedit",
+            "zookeeper","zstd","zvm"
+          )
+
+          $batchSize = [math]::Ceiling($all.Count / $totalGroups)
+          $batch = $all | Select-Object -Skip ($group * $batchSize) -First $batchSize
+
+          "Batch $group: $($batch.Count) packages" | Out-File "results\batch-$group.log"
+          $passed = 0; $failed = 0; $failures = @()
+
+          foreach ($app in $batch) {
+            "$(Get-Date -Format HH:mm:ss) $app..." | Out-File "results\$app.log"
+            $output = & $scoop install $app 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0) {
+              "PASS" | Out-File "results\batch-$group.log" -Append
+              $passed++
+              & $scoop uninstall $app 2>&1 | Out-Null
+            } else {
+              $err = ($output -split "`n" | Where-Object { $_ -match "Error:|ERROR" }) -join "; "
+              "FAIL - $err" | Out-File "results\batch-$group.log" -Append
+              $output | Out-File "results\$app.log" -Append
+              $failures += "$app"
+              $failed++
+              Remove-Item -Recurse -Force "$env:USERPROFILE\scoop\apps\$app" -ErrorAction SilentlyContinue
+            }
+          }
+
+          "Results: Passed=$passed Failed=$failed" | Out-File "results\batch-$group.log" -Append
+          Write-Host "Batch $group done: $($batch.Count) packages, $passed passed, $failed failed"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retry-logs-${{ matrix.group }}
+          path: results/
