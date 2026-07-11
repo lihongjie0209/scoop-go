@@ -57,14 +57,14 @@ jobs:
               "PASS: $app" | Out-File done -Append
               "PASS: $app" | Out-File results\summary.log -Append
               $passed++
-              Write-Host "PASS $passed/$total: $app" -ForegroundColor Green
+              Write-Host "PASS $passed/${total}: $app" -ForegroundColor Green
             } else {
               $err = ($output -split "`n" | Where-Object { $_ -match "Error:|ERROR" }) -join "; "
               "FAIL: $app - $err" | Out-File $log -Append
               $output | Out-File $log -Append
               "FAIL: $app" | Out-File results\summary.log -Append
               $failed++
-              Write-Host "FAIL $failed/$total: $app" -ForegroundColor Red
+              Write-Host "FAIL $failed/${total}: $app" -ForegroundColor Red
               Remove-Item -Recurse -Force "$env:USERPROFILE\scoop\apps\$app" -ErrorAction SilentlyContinue
               Remove-Item "$env:USERPROFILE\scoop\cache\$app*" -ErrorAction SilentlyContinue
             }
