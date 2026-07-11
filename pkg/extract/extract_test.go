@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -362,13 +363,27 @@ func TestIsWixInstaller(t *testing.T) {
 	f2.Write([]byte{0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00})
 	f2.Close()
 
-	// In a test environment dark.exe is not available, so IsWixInstaller
-	// must return false regardless of file content.
-	if got := IsWixInstaller(ole2Path); got {
-		t.Error("IsWixInstaller(OLE2 file) = true, want false (dark.exe not available)")
-	}
-	if got := IsWixInstaller(pePath); got {
-		t.Error("IsWixInstaller(PE file) = true, want false (dark.exe not available)")
+	// IsWixInstaller checks both: (1) dark.exe on PATH, (2) OLE2 magic bytes.
+	// When dark.exe IS available, OLE2 files should be detected.
+	darkAvailable := func() bool {
+		_, err := exec.LookPath("dark")
+		return err == nil
+	}()
+
+	if darkAvailable {
+		if !IsWixInstaller(ole2Path) {
+			t.Error("IsWixInstaller(OLE2 file) = false, want true (dark.exe available)")
+		}
+		if IsWixInstaller(pePath) {
+			t.Error("IsWixInstaller(PE file) = true, want false (no OLE2 magic)")
+		}
+	} else {
+		if IsWixInstaller(ole2Path) {
+			t.Error("IsWixInstaller(OLE2 file) = true, want false (dark.exe not available)")
+		}
+		if IsWixInstaller(pePath) {
+			t.Error("IsWixInstaller(PE file) = true, want false)")
+		}
 	}
 	// Non-existent file must not panic and must return false.
 	if got := IsWixInstaller(filepath.Join(dir, "nonexistent.exe")); got {
@@ -376,8 +391,9 @@ func TestIsWixInstaller(t *testing.T) {
 	}
 }
 
-func TestWixExtractorDarkNotInstalled(t *testing.T) {
-	// WixExtractor should return a clear error when dark.exe is not available.
+func TestWixExtractorFailsGracefully(t *testing.T) {
+	// WixExtractor should return a clear error on failure (either dark.exe
+	// not found, or the file is not a valid WiX bundle).
 	dir := tempDir(t)
 	dummyPath := filepath.Join(dir, "dummy.exe")
 	os.WriteFile(dummyPath, []byte{0xD0, 0xCF, 0x11, 0xE0}, 0644)
@@ -385,10 +401,12 @@ func TestWixExtractorDarkNotInstalled(t *testing.T) {
 	ext := &WixExtractor{}
 	_, err := ext.Extract(&Config{Source: dummyPath, Destination: filepath.Join(dir, "out")})
 	if err == nil {
-		t.Fatal("expected error from WixExtractor when dark.exe is not installed")
+		t.Fatal("expected error from WixExtractor, got nil")
 	}
-	if !strings.Contains(err.Error(), "dark.exe not found") {
-		t.Errorf("unexpected error message: %v", err)
+	// When dark.exe is not installed: "dark.exe not found"
+	// When dark.exe is installed but file is not a valid bundle: "dark extraction failed"
+	if !strings.Contains(err.Error(), "dark") {
+		t.Errorf("expected error about dark, got: %v", err)
 	}
 }
 
