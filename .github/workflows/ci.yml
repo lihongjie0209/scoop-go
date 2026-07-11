@@ -61,7 +61,9 @@ jobs:
         run: |
           VERSION="${{ github.ref_name }}"
           DATE="$(date -u +%Y-%m-%d)"
-          go build -ldflags="-X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.BuildDate=$DATE' -X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.Version=$VERSION'" -o "scoop-go-$VERSION-windows-amd64.exe" ./cmd/scoop/
+          # Strip leading 'v' from tag name (version.go already adds 'v' prefix)
+          VER="${VERSION#v}"
+          go build -ldflags="-X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.BuildDate=$DATE' -X 'github.com/scoopinstaller/scoop-go/cmd/scoop/cmd.Version=$VER'" -o "scoop-go-$VERSION-windows-amd64.exe" ./cmd/scoop/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
