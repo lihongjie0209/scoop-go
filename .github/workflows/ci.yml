@@ -21,6 +21,9 @@ jobs:
           go-version: '1.25'
           cache: true
 
+      - name: Build shim (required for //go:embed)
+        run: go build -o pkg/shim/shim.exe ./internal/shimbinary/
+
       - name: Vet
         run: go vet ./...
 
