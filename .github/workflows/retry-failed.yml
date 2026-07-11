@@ -48,13 +48,11 @@ jobs:
 
           # Previously failed packages (214 total, split into 8 groups)
           $all = @(
-            "ab","algol68g","alist","android-clt","ant","antigravity-cli","apache","apngasm","autoit",
             "avro-tools","aws-sam-cli","azure-functions-core-tools","azure-ps","beef","bfg","biber",
             "binutils","bochs","boost","btop","btop-lhm","bun","busybox","busybox-lean","cacert","caddy",
             "camunda-operate","castxml","cc65","cdrtools","cfr","chezscheme","chkcpu","chronograf",
             "chroot","clink-completions","clink-flex-prompt","cmder-full","concourse-fly","coq",
             "cormanlisp","crc","cuda","dos2unix","dosbox","dotnet-sdk","eac3to","elan","elm","elvish",
-            "emplace","erlang","espanso","exercism","far","fastfetch","fciv","ffmpeg","ffmpeg-essentials",
             "ffmpeg-shared","file","fontreg","gallery-dl","get-iplayer","ghc","ghostscript","gifski",
             "git-annex","git-up","glow","go-ipfs","go-jsonnet","goaccess","goreleaser","groovy",
             "gsmartcontrol","gsudo","gzip","hadoop","helmfile","hugo","hwinfo","innounp","invoke-build",
