@@ -471,10 +471,9 @@ func powerShellCompatibilityPreamble() string {
 			"function Invoke-ExternalCommand{$e=$null;$a=@();$i=0;while($i -lt $args.Count){if($args[$i]-eq\"-Path\"-or$args[$i]-eq\"-FilePath\"){$e=$args[++$i]}elseif($args[$i]-eq\"-ArgumentList\"-or$args[$i]-eq\"-Args\"){$a=$args[++$i]};$i++};if(!$e){$e=$args[0]};& $e @a;if($LASTEXITCODE){throw}};",
 			"function versiondir($app,$v,$g){$d=$appsdir;$d=join-path $d $app;$d=join-path $d $v;$d};"+
 			"function appdir($app,$g){join-path $appsdir $app};"+
+			"function info($msg){write-host $msg -foregroundcolor darkgray};"+
 			"function warn($msg){write-host 'WARN: '+$msg -foregroundcolor yellow};"+
 			"function get_config($k){$null};"+
-			"function Add-Path($p,$g){$env:Path=$p+';'+$env:Path};"+
-			"function Remove-Path($p,$g){$env:Path=($env:Path-split';'|where{$_-ne$p})-join';'};"+
 			"function versiondir($app,$v,$g){$d=$appsdir;$d=join-path $d $app;$d=join-path $d $v;$d};"+
 			"function appdir($app,$g){join-path $appsdir $app};"+
 			"function warn($msg){write-host 'WARN: '+$msg -foregroundcolor yellow};"+
