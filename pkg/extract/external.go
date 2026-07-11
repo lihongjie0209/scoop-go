@@ -58,6 +58,8 @@ func (e *InnoExtractor) Extract(cfg *Config) (*Result, error) {
 	args := []string{"-x", "-d" + cfg.Destination, cfg.Source, "-y"}
 	if cfg.ExtractDir != "" {
 		args = append(args, "-c{app}\\"+cfg.ExtractDir)
+	} else {
+		args = append(args, "-c{app}")
 	}
 
 	cmd := exec.Command("innounp", args...)
