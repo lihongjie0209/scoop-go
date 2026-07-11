@@ -1,4 +1,4 @@
-﻿// Package download provides HTTP/HTTPS download capabilities with:
+// Package download provides HTTP/HTTPS download capabilities with:
 // - Multi-connection segmented downloads (replaces Aria2)
 // - Cache management
 // - Hash verification (SHA256, SHA1, MD5, SHA512)

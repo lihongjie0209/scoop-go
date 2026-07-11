@@ -90,4 +90,10 @@ func extractZipEntry(f *zip.File, dest, extractDir string) error {
 
 	_, err = io.Copy(out, rc)
 	return err
+
+}
+// sanitizeZipEntry replaces characters invalid in Windows filenames.
+func sanitizeZipEntry(name string) string {
+	name = strings.ReplaceAll(name, ":", "_")
+	return name
 }

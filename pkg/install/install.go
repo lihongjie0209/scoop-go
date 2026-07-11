@@ -473,10 +473,10 @@ func (e *Engine) runInstaller(ctx context.Context, m *manifest.Manifest, dir str
 				installHelper("innounp")
 			}
 		}
-		psCmd := "function Expand-DarkArchive($P,$D){try{& dark -nologo -x $D $P}catch{throw}}" +
-			"function Expand-InnoArchive($P,$D){try{& innounp -x -d $D $P}catch{throw}}" +
-			"function Expand-MsiArchive($P,$D){try{msiexec /a $P /qn TARGETDIR=$(join-path $D SourceDir);$sd=join-path $D SourceDir;if(test-path $sd){gci $sd|cp -dest $D -re -force;ri $sd -re -fo}}catch{throw}}" +
-			"function Invoke-ExternalCommand($E,$A){try{& $E $A;if($LASTEXITCODE){throw}}catch{throw}}" +
+		psCmd := "function Expand-DarkArchive($Path,$DestinationPath){try{& dark -nologo -x $DestinationPath $Path}catch{throw}}" +
+			"function Expand-InnoArchive($Path,$DestinationPath){try{& innounp -x -d $DestinationPath $Path -y}catch{throw}}" +
+			"function Expand-MsiArchive($Path,$DestinationPath,$ExtractDir,[switch]$Removal){try{$sd=join-path $DestinationPath SourceDir;msiexec /a $Path /qn (\"TARGETDIR=\"+$sd);if(test-path $sd){gci $sd|cp -dest $DestinationPath -re -force;ri $sd -re -fo}}catch{throw}}" +
+			"function Invoke-ExternalCommand($Exe,$Arguments){try{& $Exe $Arguments;if($LASTEXITCODE){throw}}catch{throw}}" +
 			fullScript
 		app.LogDebug("Running installer script")
 		cmd := exec.Command("powershell.exe", "-NoProfile", "-Ex", "Unrestricted", "-Command", psCmd)
@@ -1282,4 +1282,4 @@ func installHelper(pkg string) {
 	if !strings.Contains(curPath, shimDir) {
 		os.Setenv("PATH", shimDir+string(os.PathListSeparator)+curPath)
 	}
-}
+}
