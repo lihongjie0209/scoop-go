@@ -2,13 +2,25 @@ name: Full Suite
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 22 * * 5'  # weekly Friday
+    inputs:
+      groups:
+        description: 'Number of parallel groups (default 20, 1=sequential)'
+        default: '20'
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  full-suite:
+  test:
+    strategy:
+      matrix:
+        group: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+      fail-fast: false
+    name: Group ${{ matrix.group }}
     runs-on: windows-latest
-    timeout-minutes: 480
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -26,64 +38,99 @@ jobs:
         shell: bash
         run: |
           mkdir -p ~/scoop/buckets
-          git clone --depth 1 --single-branch --no-tags https://github.com/ScoopInstaller/Main.git ~/scoop/buckets/main 2>&1 | tail -2
-          echo "main: $(ls ~/scoop/buckets/main/bucket/*.json 2>/dev/null | wc -l) manifests"
+          git clone --depth 1 --single-branch --no-tags https://github.com/ScoopInstaller/Main.git ~/scoop/buckets/main 2>&1 | tail -1
+          echo "manifests: $(ls ~/scoop/buckets/main/bucket/*.json 2>/dev/null | wc -l)"
 
       - name: Create results dir
         shell: pwsh
         run: New-Item -ItemType Directory -Force -Path results | Out-Null
 
-      - name: Run all
+      - name: Run group ${{ matrix.group }}
         shell: pwsh
         run: |
+          $group = ${{ matrix.group }}
+          $totalGroups = 20
           $scoop = ".\scoop-go.exe"
           $manifests = Get-ChildItem "$env:USERPROFILE\scoop\buckets\main\bucket\*.json" | Sort-Object Name
-          $total = $manifests.Count
-          $passed = 0; $failed = 0; $skipped = 0
-          "Total manifests: $total" | Out-File results\summary.log
+          $allCount = $manifests.Count
 
-          foreach ($mf in $manifests) {
+          # Split into groups by alphabetical order
+          $groupSize = [math]::Ceiling($allCount / $totalGroups)
+          $start = $group * $groupSize
+          $batch = $manifests | Select-Object -Skip $start -First $groupSize
+          $total = $batch.Count
+
+          "Group $group: $total packages (offset $start)" | Out-File "results\summary-group-$group.log"
+
+          $passed = 0; $failed = 0
+          foreach ($mf in $batch) {
             $app = $mf.BaseName
             $log = "results\$app.log"
-            $done = "results\_done.log"
-
-            "=== $app ===" | Out-File $log
-            "$(Get-Date -Format HH:mm:ss) Installing $app..." | Out-File $log -Append
+            "$(Get-Date -Format HH:mm:ss) Installing $app..." | Out-File $log
 
             $output = & $scoop install $app 2>&1 | Out-String
             if ($LASTEXITCODE -eq 0) {
               "PASS: $app installed" | Out-File $log -Append
               & $scoop uninstall $app 2>&1 | Out-Null
-              "PASS: $app" | Out-File done -Append
-              "PASS: $app" | Out-File results\summary.log -Append
+              "PASS: $app" | Out-File "results\summary-group-$group.log" -Append
               $passed++
-              Write-Host "PASS $passed/${total}: $app" -ForegroundColor Green
             } else {
               $err = ($output -split "`n" | Where-Object { $_ -match "Error:|ERROR" }) -join "; "
               "FAIL: $app - $err" | Out-File $log -Append
               $output | Out-File $log -Append
-              "FAIL: $app" | Out-File results\summary.log -Append
+              "FAIL: $app" | Out-File "results\summary-group-$group.log" -Append
               $failed++
-              Write-Host "FAIL $failed/${total}: $app" -ForegroundColor Red
               Remove-Item -Recurse -Force "$env:USERPROFILE\scoop\apps\$app" -ErrorAction SilentlyContinue
               Remove-Item "$env:USERPROFILE\scoop\cache\$app*" -ErrorAction SilentlyContinue
             }
           }
-
-          "========================================" | Out-File results\summary.log -Append
-          "Results: Total=$total Passed=$passed Failed=$failed" | Out-File results\summary.log -Append
-
-          Write-Host "`n========================================" -ForegroundColor Cyan
-          Write-Host "Results: Total=$total Passed=$passed Failed=$failed" -ForegroundColor $(if ($failed -eq 0) {"Green"} else {"Red"})
-
-          if ($failed -gt 0) {
-            Get-Content results\summary.log | Where-Object { $_ -match "^FAIL" } | Write-Host -ForegroundColor Red
-            exit 1
-          }
+          "Results: Total=$total Passed=$passed Failed=$failed" | Out-File "results\summary-group-$group.log" -Append
+          Write-Host "Group $group done: $total packages, $passed passed, $failed failed"
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: install-logs
+          name: logs-group-${{ matrix.group }}
           path: results/
+
+  aggregate:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: logs-group-*
+          merge-multiple: true
+
+      - name: Generate summary
+        shell: bash
+        run: |
+          echo "=== Full Suite Results ===" > summary.txt
+          echo "" >> summary.txt
+          grep -h "^FAIL\|^PASS" summary-group-*.log 2>/dev/null | sort > all-results.txt
+          total=$(wc -l < all-results.txt)
+          passed=$(grep -c "^PASS" all-results.txt || true)
+          failed=$(grep -c "^FAIL" all-results.txt || true)
+          echo "Total: $total | Passed: $passed | Failed: $failed" >> summary.txt
+          echo "" >> summary.txt
+          echo "=== Failed Packages ===" >> summary.txt
+          grep "^FAIL" all-results.txt >> summary.txt
+          cat summary.txt
+
+      - name: Upload summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-summary
+          path: summary.txt
+
+      - name: Fail if any failures
+        shell: bash
+        run: |
+          failed=$(grep -c "^FAIL" all-results.txt || true)
+          if [ "$failed" -gt 0 ]; then
+            echo "❌ $failed packages FAILED"
+            exit 1
+          fi
+          echo "✅ All $total packages PASSED"
