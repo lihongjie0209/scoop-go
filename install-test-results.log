@@ -1,0 +1,23 @@
+========================================
+Test started: 07/11/2026 16:09:54
+
+PASS: 1password-cli
+FAIL: 7zip - ERROR '7zip' (26.02) is already installed; Error: '7zip' (26.02) is already installed
+PASS: 7zip19.00-helper
+FAIL: ab - Error: installing 'ab': download failed: downloading https://fossies.org/windows/www/httpd-2.4.66-251206-Win64-VS17.zip: download failed (non-retryable): HTTP 401: 401 Unauthorized; ERROR installing 'ab': download failed: downloading https://fossies.org/windows/www/httpd-2.4.66-251206-Win64-VS17.zip: download failed (non-retryable): HTTP 401: 401 Unauthorized
+PASS: abc
+  shims: 2
+PASS: ack
+  shims: 2
+PASS: acli
+  shims: 2
+PASS: acmesharp
+PASS: acr-cli
+PASS: act
+  shims: 2
+PASS: actionlint
+  shims: 2
+PASS: adb
+  shims: 2
+PASS: adguardhome
+  shims: 2
