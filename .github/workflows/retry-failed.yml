@@ -79,7 +79,7 @@ jobs:
           $batchSize = [math]::Ceiling($all.Count / $totalGroups)
           $batch = $all | Select-Object -Skip ($group * $batchSize) -First $batchSize
 
-          "Batch $group: $($batch.Count) packages" | Out-File "results\batch-$group.log"
+          "Batch ${group}: $($batch.Count) packages" | Out-File "results\batch-$group.log"
           $passed = 0; $failed = 0; $failures = @()
 
           foreach ($app in $batch) {
