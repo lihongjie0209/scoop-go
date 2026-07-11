@@ -1258,11 +1258,13 @@ func copyDir(dst, src string) error {
 	return nil
 }
 func installHelper(pkg string) {
-	fmt.Printf("This app requires '%s' for extraction.\n", pkg)
-	fmt.Printf("Install '%s' via Scoop? [Y/n]: ", pkg)
+	interactive := false
 	var resp string
-	fmt.Scanln(&resp)
-	if resp != "" && resp != "Y" && resp != "y" && resp != "yes" {
+	_, err := fmt.Scanln(&resp)
+	if err == nil {
+		interactive = true
+	}
+	if interactive && resp != "" && resp != "Y" && resp != "y" && resp != "yes" {
 		app.LogWarn("Skipping. Install later: scoop install %s", pkg)
 		return
 	}
@@ -1272,5 +1274,12 @@ func installHelper(pkg string) {
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
 		app.LogWarn("Failed to install '%s': %v", pkg, err)
+		return
 	}
-}
+	// Add shims dir to PATH so current process can find the installed tool
+	shimDir := app.Dirs().ShimsDir
+	curPath := os.Getenv("PATH")
+	if !strings.Contains(curPath, shimDir) {
+		os.Setenv("PATH", shimDir+string(os.PathListSeparator)+curPath)
+	}
+}
