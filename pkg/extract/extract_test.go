@@ -158,7 +158,7 @@ func TestDetectByMagicGzip(t *testing.T) {
 func TestZipExtract(t *testing.T) {
 	dir := tempDir(t)
 	zipPath := createTestZip(t, dir, "app.zip", map[string]string{
-		"bin/app.exe":   "binary content",
+		"bin/app.exe":    "binary content",
 		"config/set.ini": "config",
 	})
 
@@ -185,17 +185,17 @@ func TestZipExtract(t *testing.T) {
 func TestZipExtractWithDir(t *testing.T) {
 	dir := tempDir(t)
 	zipPath := createTestZip(t, dir, "app.zip", map[string]string{
-		"release-v1.2/bin/app.exe": "binary",
+		"release-v1.2/bin/app.exe":    "binary",
 		"release-v1.2/docs/readme.md": "readme",
-		"other/file.txt": "other",
+		"other/file.txt":              "other",
 	})
 
 	dest := filepath.Join(dir, "out")
 	ext := &ZipExtractor{}
 	result, err := ext.Extract(&Config{
-		Source:     zipPath,
+		Source:      zipPath,
 		Destination: dest,
-		ExtractDir: "release-v1.2",
+		ExtractDir:  "release-v1.2",
 	})
 	if err != nil {
 		t.Fatalf("ZipExtract with dir failed: %v", err)
@@ -216,8 +216,8 @@ func TestZipExtractWithDir(t *testing.T) {
 func TestTarExtract(t *testing.T) {
 	dir := tempDir(t)
 	tarPath := createTestTar(t, dir, "app.tar", map[string]string{
-		"program.exe":   "binary content",
-		"config.ini": "config",
+		"program.exe": "binary content",
+		"config.ini":  "config",
 	})
 
 	dest := filepath.Join(dir, "out")
@@ -256,11 +256,87 @@ func TestTarGzExtract(t *testing.T) {
 	}
 }
 
+func TestTarRejectsSymlinkTraversal(t *testing.T) {
+	dir := t.TempDir()
+	tarPath := filepath.Join(dir, "malicious.tar")
+	outDir := filepath.Join(dir, "out")
+	outside := filepath.Join(dir, "outside")
+
+	f, err := os.Create(tarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(f)
+	if err := tw.WriteHeader(&tar.Header{Name: "escape", Typeflag: tar.TypeSymlink, Linkname: outside, Mode: 0777}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: "escape/pwned.txt", Mode: 0644, Size: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("owned")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&TarExtractor{}).Extract(&Config{Source: tarPath, Destination: outDir}); err == nil {
+		t.Fatal("expected archive symlink to be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "pwned.txt")); !os.IsNotExist(err) {
+		t.Fatalf("archive wrote outside destination: %v", err)
+	}
+}
+
+func TestTarRejectsPreexistingSymlinkParent(t *testing.T) {
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "out")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(outDir, "escape")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	tarPath := filepath.Join(dir, "preexisting-link.tar")
+	f, err := os.Create(tarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(f)
+	if err := tw.WriteHeader(&tar.Header{Name: "escape/pwned.txt", Mode: 0644, Size: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("owned")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&TarExtractor{}).Extract(&Config{Source: tarPath, Destination: outDir}); err == nil {
+		t.Fatal("expected write through preexisting symlink to be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "pwned.txt")); !os.IsNotExist(err) {
+		t.Fatalf("archive wrote outside destination: %v", err)
+	}
+}
+
 func TestZipSlipProtection(t *testing.T) {
 	dir := tempDir(t)
 	// Create a zip with path traversal
 	zipPath := createTestZip(t, dir, "malicious.zip", map[string]string{
-		"../../../etc/passwd": "root:x:0:0:",
+		"../../../etc/passwd":                     "root:x:0:0:",
 		"..\\..\\..\\windows\\system32\\evil.exe": "evil",
 	})
 
@@ -287,9 +363,9 @@ func TestRemoveSource(t *testing.T) {
 	dest := filepath.Join(dir, "out")
 	ext := &ZipExtractor{}
 	_, err := ext.Extract(&Config{
-		Source:     zipPath,
+		Source:      zipPath,
 		Destination: dest,
-		RemoveSrc:  true,
+		RemoveSrc:   true,
 	})
 	if err != nil {
 		t.Fatalf("Extract failed: %v", err)

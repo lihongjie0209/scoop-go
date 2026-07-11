@@ -295,9 +295,13 @@ func expandWindowsEnv(input string) string {
 				i += 2
 				continue
 			}
-			// Look up the variable
-			val := os.Getenv(varName)
-			buf.WriteString(val)
+			// Expand known variables and preserve unknown ones, matching
+			// Windows ExpandEnvironmentStrings behavior.
+			if val, ok := os.LookupEnv(varName); ok {
+				buf.WriteString(val)
+			} else {
+				buf.WriteString(input[i : i+j+2])
+			}
 			i += j + 2 // skip past closing %
 		} else {
 			buf.WriteByte(input[i])
@@ -598,14 +602,14 @@ func launchProcess(info *ShimInfo, jobHandle uintptr) int {
 	ret, _, _ := procCreateProcessW.Call(
 		0, // lpApplicationName
 		uintptr(unsafe.Pointer(&cmdLineUTF16[0])), // lpCommandLine (writable)
-		0, // lpProcessAttributes
-		0, // lpThreadAttributes
-		1, // bInheritHandles (true)
-		CREATE_SUSPENDED, // dwCreationFlags
-		0,  // lpEnvironment (inherit parent's)
+		0,                               // lpProcessAttributes
+		0,                               // lpThreadAttributes
+		1,                               // bInheritHandles (true)
+		CREATE_SUSPENDED,                // dwCreationFlags
+		0,                               // lpEnvironment (inherit parent's)
 		uintptr(unsafe.Pointer(cwdPtr)), // lpCurrentDirectory
-		uintptr(unsafe.Pointer(&si)), // lpStartupInfo
-		uintptr(unsafe.Pointer(&pi)), // lpProcessInformation
+		uintptr(unsafe.Pointer(&si)),    // lpStartupInfo
+		uintptr(unsafe.Pointer(&pi)),    // lpProcessInformation
 	)
 
 	if ret == 0 {

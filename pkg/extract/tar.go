@@ -183,8 +183,14 @@ func extractTarReader(cfg *Config, r io.Reader, closeFn func()) (*Result, error)
 			if err := os.MkdirAll(target, 0755); err != nil {
 				return nil, err
 			}
-		case tar.TypeReg:
+		case tar.TypeReg, tar.TypeRegA:
+			if err := rejectSymlinkParents(dest, target); err != nil {
+				return nil, err
+			}
 			if err := ensureParentDir(target); err != nil {
+				return nil, err
+			}
+			if err := rejectSymlinkParents(dest, target); err != nil {
 				return nil, err
 			}
 			f, err := os.Create(target)
@@ -197,16 +203,8 @@ func extractTarReader(cfg *Config, r io.Reader, closeFn func()) (*Result, error)
 			}
 			f.Close()
 			count++
-		case tar.TypeSymlink:
-			// Validate symlink target is within the destination directory
-			// to prevent symlink traversal attacks.
-			linkDir := filepath.Dir(target)
-			resolvedTarget := filepath.Join(linkDir, header.Linkname)
-			if !strings.HasPrefix(filepath.Clean(resolvedTarget), filepath.Clean(dest)+string(os.PathSeparator)) &&
-				filepath.Clean(resolvedTarget) != filepath.Clean(dest) {
-				continue
-			}
-			os.Symlink(header.Linkname, target)
+		case tar.TypeSymlink, tar.TypeLink:
+			return nil, fmt.Errorf("refusing archive link %q -> %q", header.Name, header.Linkname)
 		}
 	}
 
@@ -219,6 +217,34 @@ func extractTarReader(cfg *Config, r io.Reader, closeFn func()) (*Result, error)
 	}
 
 	return &Result{FilesExtracted: count}, nil
+}
+
+// rejectSymlinkParents prevents a regular file from being written through a
+// link that existed before this archive was extracted.
+func rejectSymlinkParents(dest, target string) error {
+	dest = filepath.Clean(dest)
+	target = filepath.Clean(target)
+	rel, err := filepath.Rel(dest, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("archive target escapes destination: %q", target)
+	}
+
+	current := dest
+	parts := strings.Split(rel, string(os.PathSeparator))
+	for _, part := range parts[:len(parts)-1] {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("archive target traverses symlink: %q", current)
+		}
+	}
+	return nil
 }
 
 // extractSingleFile extracts a single compressed file (gz/xz/bz2) without tar.

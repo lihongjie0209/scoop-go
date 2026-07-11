@@ -4,6 +4,8 @@
 审计对象：`D:\code\scoop-go`（Go 版）、`D:\code\Scoop`（PowerShell 原版，commit `b588a06`）、`D:\code\shim-source`（参考 shim，commit `24c107b`）  
 Go 版基线：commit `0121aec`
 
+> 修复进展（2026-07-11）：P0-04 已修复并增加恶意 tar 回归测试；P1-01 已修复，重建后的 Go shim 通过参考套件 28/28；P0-02 已加入第一阶段更新回滚（恢复 `current`、shim、快捷方式和环境变量），完整安装事务仍待完成。报告主体保留首次审计结论，便于追踪剩余准入项。
+
 ## 1. 最终结论
 
 **结论：NO-GO，当前 Go 版不能安全、完整地替代 PowerShell 原版。**

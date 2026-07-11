@@ -57,6 +57,7 @@ func extractZipEntry(f *zip.File, dest, extractDir string) error {
 	}
 	relPath := strings.TrimPrefix(name, extractDir)
 	relPath = strings.TrimPrefix(relPath, "/")
+	relPath = sanitizeZipEntry(relPath)
 
 	target, err := cleanPath(dest, relPath)
 	if err != nil || target == "" {

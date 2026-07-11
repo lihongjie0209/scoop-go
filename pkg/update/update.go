@@ -212,9 +212,21 @@ func UpdateApp(ctx context.Context, appName string, global, force, quiet bool, u
 
 	app.LogInfo("Updating '%s' (%s -> %s)", appName, currentVersion, newVersion)
 
+	// Resolve the new architecture before changing any part of the working
+	// installation. An unsupported update must leave the old app untouched.
+	resolvedArch := newManifest.ResolveArch(arch)
+	if resolvedArch == "" {
+		return fmt.Errorf("'%s' doesn't support architecture %s", appName, arch)
+	}
+
 	// --- Old version cleanup (before installing new) ---
+	rollbackCurrent := ""
 	if currentManifest != nil && currentVersion != "" {
 		oldVersionDir := app.AppVersionDir(appName, currentVersion, global)
+		rollbackCurrent = currentPath + ".scoop-go-rollback"
+		if err := prepareCurrentRollback(currentPath, rollbackCurrent); err != nil {
+			return fmt.Errorf("preparing update rollback for '%s': %w", appName, err)
+		}
 
 		// Run pre_uninstall hooks
 		if err := runHooks(ctx, currentManifest.GetPreUninstall(arch), oldVersionDir); err != nil {
@@ -230,16 +242,6 @@ func UpdateApp(ctx context.Context, appName string, global, force, quiet bool, u
 		// Remove env_set entries from old version
 		removeEnvSetForManifest(currentManifest, arch, global)
 
-		// Remove old current junction
-		if err := os.RemoveAll(currentPath); err != nil {
-			app.LogWarn("Failed to remove current link: %v", err)
-		}
-	}
-
-	// --- Resolve architecture for new version ---
-	resolvedArch := newManifest.ResolveArch(arch)
-	if resolvedArch == "" {
-		return fmt.Errorf("'%s' doesn't support architecture %s", appName, arch)
 	}
 
 	// --- Install new version ---
@@ -255,12 +257,108 @@ func UpdateApp(ctx context.Context, appName string, global, force, quiet bool, u
 	}
 
 	if err := engine.Install(ctx); err != nil {
+		if rollbackCurrent != "" {
+			if rollbackErr := restoreFailedUpdate(currentPath, rollbackCurrent, currentManifest, arch, appName, global); rollbackErr != nil {
+				return fmt.Errorf("installing '%s': %w (rollback also failed: %v)", appName, err, rollbackErr)
+			}
+		}
 		return fmt.Errorf("installing '%s': %w", appName, err)
+	}
+	if rollbackCurrent != "" {
+		if err := os.RemoveAll(rollbackCurrent); err != nil {
+			app.LogWarn("Failed to remove update rollback link: %v", err)
+		}
 	}
 
 	// Write last_update after successful update
 	writeLastUpdate()
 
+	return nil
+}
+
+func prepareCurrentRollback(currentPath, rollbackPath string) error {
+	if err := os.RemoveAll(rollbackPath); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(currentPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return os.Rename(currentPath, rollbackPath)
+}
+
+func restoreFailedUpdate(currentPath, rollbackPath string, m *manifest.Manifest, arch, appName string, global bool) error {
+	if err := os.RemoveAll(currentPath); err != nil {
+		return fmt.Errorf("removing failed current link: %w", err)
+	}
+	if _, err := os.Lstat(rollbackPath); err != nil {
+		return fmt.Errorf("rollback link is unavailable: %w", err)
+	}
+	if err := os.Rename(rollbackPath, currentPath); err != nil {
+		return fmt.Errorf("restoring current link: %w", err)
+	}
+
+	var restoreErrors []string
+	if err := restoreShimsForManifest(m, arch, currentPath, global); err != nil {
+		restoreErrors = append(restoreErrors, err.Error())
+	}
+	if err := restoreShortcutsForManifest(m, arch, currentPath, global); err != nil {
+		restoreErrors = append(restoreErrors, err.Error())
+	}
+	for name, value := range m.GetEnvSet(arch) {
+		value = strings.ReplaceAll(value, "$dir", currentPath)
+		if err := env.SetEnv(name, value, global); err != nil {
+			restoreErrors = append(restoreErrors, fmt.Sprintf("restoring env %s: %v", name, err))
+		}
+	}
+	if len(restoreErrors) > 0 {
+		return fmt.Errorf("restoring integrations: %s", strings.Join(restoreErrors, "; "))
+	}
+	app.LogWarn("Update failed; restored the previous installation of '%s'.", appName)
+	return nil
+}
+
+func restoreShimsForManifest(m *manifest.Manifest, arch, currentPath string, global bool) error {
+	shimDir := app.ShimDir(global)
+	for _, bin := range manifest.BinEntries(m.GetBin(arch)) {
+		if err := shim.Create(&shim.Config{
+			TargetPath: filepath.Join(currentPath, bin[0]),
+			Name:       bin[1],
+			Args:       bin[2],
+			ShimDir:    shimDir,
+			Global:     global,
+		}); err != nil {
+			return fmt.Errorf("restoring shim %s: %w", bin[1], err)
+		}
+	}
+	return nil
+}
+
+func restoreShortcutsForManifest(m *manifest.Manifest, arch, currentPath string, global bool) error {
+	for _, item := range m.GetShortcuts(arch) {
+		if len(item) < 2 {
+			continue
+		}
+		target := filepath.Join(currentPath, item[0])
+		args, icon := "", ""
+		if len(item) > 2 {
+			args = item[2]
+		}
+		if len(item) > 3 {
+			icon = filepath.Join(currentPath, item[3])
+		}
+		if err := shortcut.Create(&shortcut.Config{
+			TargetPath: target,
+			Name:       item[1],
+			Arguments:  args,
+			IconPath:   icon,
+			WorkingDir: filepath.Dir(target),
+			Global:     global,
+		}); err != nil {
+			return fmt.Errorf("restoring shortcut %s: %w", item[1], err)
+		}
+	}
 	return nil
 }
 
