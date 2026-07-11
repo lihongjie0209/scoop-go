@@ -284,9 +284,15 @@ func (e *Engine) extractFiles(ctx context.Context, m *manifest.Manifest, destDir
 		if strings.HasSuffix(strings.ToLower(file), ".exe") {
 			if m.InnoSetup {
 				app.LogDebug("Using InnoExtractor for %s (innosetup=true)", filepath.Base(file))
+				if _, err := exec.LookPath("innounp"); err != nil {
+					installHelper("innounp")
+				}
 				extractor = &extract.InnoExtractor{}
 			} else if extract.IsWixInstaller(file) {
 				app.LogDebug("Using WixExtractor for %s (WiX bundle detected)", filepath.Base(file))
+				if _, err := exec.LookPath("dark"); err != nil {
+					installHelper("dark")
+				}
 				extractor = &extract.WixExtractor{}
 			} else {
 				app.LogDebug("Skipping extraction for %s (not a supported archive type)", filepath.Base(file))

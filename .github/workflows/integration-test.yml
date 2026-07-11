@@ -40,32 +40,46 @@ jobs:
 
           # Test packages grouped by format type
           $testPackages = @(
-            # zip + bin
+            # zip + simple bin
             @{name="fd";      type="zip+bin"},
             @{name="jq";      type="zip+single"},
             @{name="aria2";   type="zip+bin"},
             @{name="which";   type="zip+subdir"},
-            @{name="lazygit"; type="zip+tar.gz"},
-            @{name="youtube-dl"; type="7z+py"},
-            @{name="htop";    type="tar.gz"},
-            @{name="ripgrep";  type="zip+env"},
-            @{name="ag";       type="zip+bin"},
-            @{name="peco";     type="zip+bin"},
+            # Multiple shims
             @{name="diffutils"; type="tar.xz"},
-            @{name="touch";    type="zip"},
-            @{name="less";     type="zip"},
-            @{name="composer"; type="phar"},
-            @{name="bat";      type="zip+persist"},
+            # tar.gz
+            @{name="curl";    type="tar.gz+bin"},
+            # 7z
             @{name="bandizip"; type="7z"},
-            @{name="vcredist"; type="exe"},
-            @{name="innounp";  type="7z+innounp"},
-            @{name="dark";     type="zip"},
+            @{name="innounp";  type="zip"},
+            # zip + env_set
+            @{name="ripgrep"; type="zip+env"},
+            # zip + persist + hooks
+            @{name="bat";     type="zip+persist"},
+            # env_add_path
+            @{name="composer"; type="phar"},
+            # single exe (direct download)
+            @{name="youtube-dl"; type="exe"},
             @{name="nuget";    type="exe"},
+            # Suggestions
+            @{name="jq";      type="zip+suggest"},
+            # InnoSetup (needs innounp)
+            @{name="innounp"; type="zip"},
+            # MSI
+            @{name="openssl"; type="exe+innosetup"},
+            # zip + MSVC dep
+            @{name="dark";    type="zip"},
+            # zip
             @{name="protobuf"; type="zip"},
-            @{name="gzip";     type="zip"},
-            @{name="unzip";    type="zip"},
-            @{name="openssl";  type="msi"},
-            @{name="ruby";     type="zip+installer"}
+            @{name="gzip";    type="zip"},
+            @{name="bzip2";   type="zip"},
+            @{name="less";    type="zip"},
+            @{name="touch";   type="zip"},
+            # Multiple bins
+            @{name="ag";      type="zip+bin"},
+            @{name="peco";    type="zip+bin"},
+            @{name="lazygit"; type="zip"},
+            @{name="7zip";    type="msi"}
           )
 
           $total = $testPackages.Count
