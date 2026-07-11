@@ -60,7 +60,7 @@ jobs:
           $batch = $manifests | Select-Object -Skip $start -First $groupSize
           $total = $batch.Count
 
-          "Group $group: $total packages (offset $start)" | Out-File "results\summary-group-$group.log"
+          "Group ${group}: $total packages (offset $start)" | Out-File "results\summary-group-$group.log"
 
           $passed = 0; $failed = 0
           foreach ($mf in $batch) {
