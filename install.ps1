@@ -84,24 +84,35 @@ if ($currentPath -notlike "*$ScoopGoShims*") {
     $env:Path = "$ScoopGoShims;$env:Path"
 }
 
-# --- Step 5: Create scoop.cmd wrapper for easy access ---
+# --- Step 5: Create shim files for easy access ---
+$scoopGoExe = Join-Path $versionDir "scoop-go.exe"
+
+# scoop.cmd (for cmd.exe)
 $cmdPath = Join-Path $ScoopGoShims "scoop.cmd"
 @"
 @echo off
 "%~dp0\..\apps\scoop-go\current\scoop-go.exe" %*
 "@ | Out-File $cmdPath -Encoding Ascii
 
-# Also create scoop.ps1 for PowerShell
+# scoop.ps1 (for PowerShell)
 $ps1Path = Join-Path $ScoopGoShims "scoop.ps1"
 @"
 # Scoop Go shim
-& "$([System.IO.Path]::GetFullPath("$PSScriptRoot\..\apps\scoop-go\current\scoop-go.exe"))" @args
+& '$scoopGoExe' @args
 exit `$LASTEXITCODE
 "@ | Out-File $ps1Path -Encoding Ascii
 
-# Also copy as scoop.exe using the scoop-go binary via shim
-$shimExePath = Join-Path $ScoopGoShims "scoop.exe"
-Copy-Item (Join-Path $versionDir "scoop-go.exe") $shimExePath -Force
+# scoop-go.ps1 (for PowerShell, scoop-go command)
+$ps1Path2 = Join-Path $ScoopGoShims "scoop-go.ps1"
+@"
+# Scoop Go shim
+& '$scoopGoExe' @args
+exit `$LASTEXITCODE
+"@ | Out-File $ps1Path2 -Encoding Ascii
+
+# scoop.exe and scoop-go.exe (direct binary copies for maximum compatibility)
+Copy-Item $scoopGoExe (Join-Path $ScoopGoShims "scoop.exe") -Force
+Copy-Item $scoopGoExe (Join-Path $ScoopGoShims "scoop-go.exe") -Force
 
 # --- Step 6: Verify ---
 Write-HostColor Cyan "`n=== Verification ==="
