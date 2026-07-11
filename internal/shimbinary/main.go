@@ -267,7 +267,44 @@ func tryParseLine(rawLine string) (string, string) {
 // --- Helpers (1:1 match) ---
 
 func expandEnvVars(input string) string {
-	return os.ExpandEnv(input)
+	// First, expand Unix-style $VAR and ${VAR} (Go's default)
+	result := os.ExpandEnv(input)
+	// Then expand Windows-style %VAR% syntax
+	result = expandWindowsEnv(result)
+	return result
+}
+
+// expandWindowsEnv replaces %VAR% patterns with environment variable values.
+func expandWindowsEnv(input string) string {
+	var buf strings.Builder
+	i := 0
+	for i < len(input) {
+		if input[i] == '%' {
+			// Find closing %
+			j := strings.Index(input[i+1:], "%")
+			if j < 0 {
+				// No closing % — keep as-is
+				buf.WriteByte(input[i])
+				i++
+				continue
+			}
+			varName := input[i+1 : i+1+j]
+			if varName == "" {
+				// %% → literal %
+				buf.WriteByte('%')
+				i += 2
+				continue
+			}
+			// Look up the variable
+			val := os.Getenv(varName)
+			buf.WriteString(val)
+			i += j + 2 // skip past closing %
+		} else {
+			buf.WriteByte(input[i])
+			i++
+		}
+	}
+	return buf.String()
 }
 
 func expandAndUnquote(value string) string {

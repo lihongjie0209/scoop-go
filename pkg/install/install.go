@@ -750,13 +750,13 @@ func (e *Engine) saveInstallInfo(versionDir string) {
 
 	data, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {
-		app.LogDebug("Failed to marshal install info: %v", err)
+		app.LogWarn("Failed to marshal install info: %v", err)
 		return
 	}
 
 	path := filepath.Join(versionDir, "install.json")
 	if err := os.WriteFile(path, data, 0644); err != nil {
-		app.LogDebug("Failed to write install.json: %v", err)
+		app.LogWarn("Failed to write install.json: %v", err)
 	}
 }
 
@@ -765,13 +765,13 @@ func (e *Engine) saveManifest(versionDir string) {
 	// Serialize manifest back to JSON
 	data, err := json.MarshalIndent(e.Manifest, "", "  ")
 	if err != nil {
-		app.LogDebug("Failed to marshal manifest: %v", err)
+		app.LogWarn("Failed to marshal manifest: %v", err)
 		return
 	}
 
 	path := filepath.Join(versionDir, "manifest.json")
 	if err := os.WriteFile(path, data, 0644); err != nil {
-		app.LogDebug("Failed to write manifest.json: %v", err)
+		app.LogWarn("Failed to write manifest.json: %v", err)
 	}
 }
 

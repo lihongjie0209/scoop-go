@@ -183,7 +183,7 @@ func extractTarReader(cfg *Config, r io.Reader, closeFn func()) (*Result, error)
 			if err := os.MkdirAll(target, 0755); err != nil {
 				return nil, err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := ensureParentDir(target); err != nil {
 				return nil, err
 			}
@@ -198,6 +198,14 @@ func extractTarReader(cfg *Config, r io.Reader, closeFn func()) (*Result, error)
 			f.Close()
 			count++
 		case tar.TypeSymlink:
+			// Validate symlink target is within the destination directory
+			// to prevent symlink traversal attacks.
+			linkDir := filepath.Dir(target)
+			resolvedTarget := filepath.Join(linkDir, header.Linkname)
+			if !strings.HasPrefix(filepath.Clean(resolvedTarget), filepath.Clean(dest)+string(os.PathSeparator)) &&
+				filepath.Clean(resolvedTarget) != filepath.Clean(dest) {
+				continue
+			}
 			os.Symlink(header.Linkname, target)
 		}
 	}
