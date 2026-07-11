@@ -11,12 +11,12 @@ import (
 )
 
 var updateFlags struct {
-	force     bool
-	global    bool
-	quiet     bool
-	all       bool
-	noCache   bool
-	skipHash  bool
+	force       bool
+	global      bool
+	quiet       bool
+	all         bool
+	noCache     bool
+	skipHash    bool
 	independent bool
 }
 
@@ -38,7 +38,7 @@ You can use '*' or '--all' in place of <app> to update all apps.`,
 				return fmt.Errorf("--global is invalid when <app> is not specified")
 			}
 
-			if err := update.SyncScoop(); err != nil {
+			if err := update.SyncScoop(Version); err != nil {
 				return fmt.Errorf("updating scoop: %w", err)
 			}
 
@@ -57,7 +57,7 @@ You can use '*' or '--all' in place of <app> to update all apps.`,
 
 		for _, appName := range args {
 			if appName == "scoop" {
-				if err := update.SyncScoop(); err != nil {
+				if err := update.SyncScoop(Version); err != nil {
 					return err
 				}
 				app.LogSuccess("Scoop was updated successfully!")

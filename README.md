@@ -44,6 +44,8 @@ go build -o scoop-go.exe ./cmd/scoop/
 
 `scoop install`, `search`, `list`, `uninstall`, `info`, `update`, `status`, `bucket`, `config`, `shim`, `checkup`, `cache`, `cleanup`, `hold`, `reset`, `export`, `import`, `cat`, `which`, `prefix`, `depends`, `home`, `alias`, `create`, `version`, `help`
 
+`scoop update` checks `lihongjie0209/scoop-go` GitHub Releases for a newer Windows binary. It requires a matching entry in `checksums.txt`, validates the staged executable, and retains the previous executable as `.old`. Set `scoop_go_repo` (or `SCOOP_GO_REPO=owner/repo`) to use another compatible release repository.
+
 ### Build
 
 ```bash

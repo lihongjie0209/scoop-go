@@ -33,6 +33,48 @@ func TestParseValidManifest(t *testing.T) {
 	}
 }
 
+func TestGenerateUserManifestMergesAutoupdate(t *testing.T) {
+	source := MustParse([]byte(`{
+		"version":"24.09",
+		"homepage":"https://example.test",
+		"license":"MIT",
+		"url":"https://example.invalid/current.zip",
+		"hash":"old-hash",
+		"architecture":{"64bit":{"url":"https://example.invalid/current-x64.zip","hash":"old-arch-hash"}},
+		"autoupdate":{
+			"bin":"tool-$majorVersion.exe",
+			"architecture":{"64bit":{"url":"https://example.test/tool-$cleanVersion-x64.zip"}}
+		}
+	}`))
+	data, err := GenerateUserManifest(source, "23.07.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generated.Version != "23.07.1" {
+		t.Fatalf("version = %q", generated.Version)
+	}
+	if got := generated.GetURL("64bit"); len(got) != 1 || got[0] != "https://example.test/tool-23071-x64.zip" {
+		t.Fatalf("generated URL = %#v", got)
+	}
+	if got := BinEntries(generated.Bin); len(got) != 1 || got[0][0] != "tool-23.exe" {
+		t.Fatalf("generated bin = %#v", got)
+	}
+	if got := generated.GetHash("64bit"); len(got) != 0 {
+		t.Fatalf("stale hash was retained: %#v", got)
+	}
+}
+
+func TestGenerateUserManifestRequiresAutoupdate(t *testing.T) {
+	source := &Manifest{Version: "2.0.0", URL: FlexibleStrings{"https://example.test/current.zip"}}
+	if _, err := GenerateUserManifest(source, "1.0.0"); err == nil {
+		t.Fatal("expected manifest without autoupdate to be rejected")
+	}
+}
+
 func TestParseManifestMissingRequired(t *testing.T) {
 	tests := []struct {
 		name string
@@ -258,7 +300,6 @@ func TestFlexibleStringsUnmarshal(t *testing.T) {
 		})
 	}
 }
-
 
 // TestParseAllBucketManifests parses ALL manifests from local buckets.
 // This ensures the parser handles every real-world manifest format.

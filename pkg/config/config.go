@@ -25,26 +25,27 @@ type Config struct {
 	// Repository
 	SCOOPRepo   string `json:"scoop_repo,omitempty"`
 	SCOOPBranch string `json:"scoop_branch,omitempty"`
+	ScoopGoRepo string `json:"scoop_go_repo,omitempty"`
 
 	// GitHub
 	GH_TOKEN string `json:"gh_token,omitempty"`
 
 	// Aria2
-	Aria2Enabled            *bool    `json:"aria2-enabled,omitempty"`
-	Aria2WarningEnabled     *bool    `json:"aria2-warning-enabled,omitempty"`
-	Aria2RetryWait          int      `json:"aria2-retry-wait,omitempty"`
-	Aria2Split              int      `json:"aria2-split,omitempty"`
-	Aria2MaxConnPerServer   int      `json:"aria2-max-connection-per-server,omitempty"`
-	Aria2MinSplitSize       string   `json:"aria2-min-split-size,omitempty"`
-	Aria2Options            []string `json:"aria2-options,omitempty"`
-	UseExternal7Zip         bool     `json:"use_external_7zip,omitempty"`
-	UseLessMSI              bool     `json:"use_lessmsi,omitempty"`
+	Aria2Enabled          *bool    `json:"aria2-enabled,omitempty"`
+	Aria2WarningEnabled   *bool    `json:"aria2-warning-enabled,omitempty"`
+	Aria2RetryWait        int      `json:"aria2-retry-wait,omitempty"`
+	Aria2Split            int      `json:"aria2-split,omitempty"`
+	Aria2MaxConnPerServer int      `json:"aria2-max-connection-per-server,omitempty"`
+	Aria2MinSplitSize     string   `json:"aria2-min-split-size,omitempty"`
+	Aria2Options          []string `json:"aria2-options,omitempty"`
+	UseExternal7Zip       bool     `json:"use_external_7zip,omitempty"`
+	UseLessMSI            bool     `json:"use_lessmsi,omitempty"`
 
 	// Update behavior
-	ForceUpdate   bool `json:"force_update,omitempty"`
+	ForceUpdate   bool  `json:"force_update,omitempty"`
 	ShowUpdateLog *bool `json:"show_update_log,omitempty"`
-	ShowManifest  bool `json:"show_manifest,omitempty"`
-	UpdateNightly bool `json:"update_nightly,omitempty"`
+	ShowManifest  bool  `json:"show_manifest,omitempty"`
+	UpdateNightly bool  `json:"update_nightly,omitempty"`
 
 	// Search cache
 	UseSQLiteCache bool `json:"use_sqlite_cache,omitempty"`
@@ -96,13 +97,13 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 	// Normalize snake_case aria2 keys to kebab-case for backward compatibility
 	aria2SnakeToKebab := map[string]string{
-		"aria2_enabled":                    "aria2-enabled",
-		"aria2_warning_enabled":            "aria2-warning-enabled",
-		"aria2_retry_wait":                 "aria2-retry-wait",
-		"aria2_split":                      "aria2-split",
-		"aria2_max_connection_per_server":  "aria2-max-connection-per-server",
-		"aria2_min_split_size":             "aria2-min-split-size",
-		"aria2_options":                    "aria2-options",
+		"aria2_enabled":                   "aria2-enabled",
+		"aria2_warning_enabled":           "aria2-warning-enabled",
+		"aria2_retry_wait":                "aria2-retry-wait",
+		"aria2_split":                     "aria2-split",
+		"aria2_max_connection_per_server": "aria2-max-connection-per-server",
+		"aria2_min_split_size":            "aria2-min-split-size",
+		"aria2_options":                   "aria2-options",
 	}
 
 	for snake, kebab := range aria2SnakeToKebab {
@@ -169,6 +170,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		SCOOPRepo:              "https://github.com/ScoopInstaller/Scoop",
 		SCOOPBranch:            "master",
+		ScoopGoRepo:            "lihongjie0209/scoop-go",
 		Aria2Enabled:           boolPtr(true),
 		Aria2WarningEnabled:    boolPtr(true),
 		Aria2RetryWait:         2,
@@ -300,6 +302,8 @@ func (m *Manager) Get(key string, defaultValue ...interface{}) interface{} {
 		val = m.config.SCOOPRepo
 	case "scoop_branch":
 		val = m.config.SCOOPBranch
+	case "scoop_go_repo":
+		val = m.config.ScoopGoRepo
 	case "gh_token":
 		val = m.config.GH_TOKEN
 	// Aria2: kebab-case (current)
@@ -442,6 +446,11 @@ func (m *Manager) Set(key string, value interface{}) error {
 		}
 	case "scoop_branch":
 		err := setString(&m.config.SCOOPBranch, value)
+		if err != nil {
+			return err
+		}
+	case "scoop_go_repo":
+		err := setString(&m.config.ScoopGoRepo, value)
 		if err != nil {
 			return err
 		}

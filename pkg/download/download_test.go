@@ -2,13 +2,14 @@ package download
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/sha512"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
-	"crypto/sha256"
 )
 
 // Test helpers
@@ -161,6 +162,24 @@ func TestHashVerification(t *testing.T) {
 	}
 }
 
+func TestSHA512Verification(t *testing.T) {
+	content := []byte("sha512-content")
+	sum := sha512.Sum512(content)
+	dir := t.TempDir()
+	cached := filepath.Join(dir, "sha512-cache")
+	if err := os.WriteFile(cached, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	d := NewDownloader(&Config{CacheDir: dir, CacheKey: "sha512-cache", UseCache: true, ExpectedHash: fmt.Sprintf("sha512:%x", sum)})
+	result, err := d.Download(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.FromCache {
+		t.Fatal("expected verified cache hit")
+	}
+}
+
 func TestSourceForgeURL(t *testing.T) {
 	handler := NewURLHandler(http.DefaultClient, "")
 
@@ -176,9 +195,9 @@ func TestProxyFromConfig(t *testing.T) {
 		proxy string
 		want  string // expected proxy host (empty = direct)
 	}{
-		{"", ""},                 // default → ProxyFromEnvironment
-		{"default", ""},          // default
-		{"none", ""},             // direct
+		{"", ""},        // default → ProxyFromEnvironment
+		{"default", ""}, // default
+		{"none", ""},    // direct
 		{"proxy.example.com:8080", "proxy.example.com:8080"},
 		{"user:pass@proxy.example.com:3128", "proxy.example.com:3128"},
 	}

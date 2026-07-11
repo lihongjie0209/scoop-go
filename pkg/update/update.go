@@ -35,64 +35,17 @@ type InstallInfo struct {
 
 // SyncScoop updates Scoop itself via git.
 // Mirrors Sync-Scoop() from libexec/scoop-update.ps1 L64-L153.
-func SyncScoop() error {
-	currentDir := app.AppVersionDir("scoop", "current", false)
-
-	cfg := app.Config()
-	repo := cfg.Config().SCOOPRepo
-	if repo == "" {
-		repo = "https://github.com/ScoopInstaller/Scoop"
+func SyncScoop(currentVersion string) error {
+	app.LogInfo("Checking for Scoop Go updates...")
+	started, err := SelfUpdate(currentVersion)
+	if err != nil {
+		return err
 	}
-	branch := cfg.Config().SCOOPBranch
-	if branch == "" {
-		branch = "master"
+	if started {
+		app.LogSuccess("Scoop Go update downloaded and verified. It will be installed when this command exits.")
+	} else {
+		app.LogSuccess("Scoop Go is already up to date.")
 	}
-
-	if !gitutil.IsRepo(currentDir) {
-		app.LogInfo("Updating Scoop...")
-		return cloneScoop(currentDir, repo)
-	}
-
-	app.LogInfo("Updating Scoop...")
-
-	// Save previous commit for log
-	prevHash, _ := gitutil.HeadHash(currentDir)
-
-	// Check for uncommitted changes
-	hasChanges, _ := gitutil.HasUncommittedChanges(currentDir)
-	if hasChanges {
-		app.LogWarn("Uncommitted changes detected. Skipping update (stash not supported in pure Go).")
-		return nil
-	}
-
-	// Check if we need to switch branches
-	currentBranch, _ := gitutil.CurrentBranch(currentDir)
-	if currentBranch != "" && branch != "" && currentBranch != branch {
-		app.LogWarn("Branch mismatch: current=%s, config=%s. Re-cloning...", currentBranch, branch)
-		os.RemoveAll(currentDir)
-		return cloneScoop(currentDir, repo)
-	}
-
-	// Pull
-	if err := gitutil.Pull(currentDir); err != nil {
-		return fmt.Errorf("git pull failed: %w", err)
-	}
-
-	// Show update log if config enabled
-	showUpdateLog := cfg.Config().ShowUpdateLog
-	if showUpdateLog != nil && *showUpdateLog {
-		newHash, _ := gitutil.HeadHash(currentDir)
-		if prevHash != "" && newHash != "" && prevHash != newHash {
-			displayCommitLog(currentDir, prevHash, newHash)
-		}
-	}
-
-	// Re-shim scoop
-	shimScoop(currentDir)
-
-	// Write last_update timestamp
-	writeLastUpdate()
-
 	return nil
 }
 
@@ -176,7 +129,7 @@ func UpdateApp(ctx context.Context, appName string, global, force, quiet bool, u
 	// --- Version comparison ---
 	if !force && currentVersion != "" {
 		cmp := version.Compare(currentVersion, newVersion)
-		if cmp >= 0 {
+		if cmp <= 0 {
 			if !quiet {
 				app.LogWarn("The latest version of '%s' (%s) is already installed.", appName, currentVersion)
 			}
@@ -360,55 +313,6 @@ func restoreShortcutsForManifest(m *manifest.Manifest, arch, currentPath string,
 		}
 	}
 	return nil
-}
-
-// cloneScoop does a fresh git clone of Scoop from the given repo URL.
-func cloneScoop(targetDir, repo string) error {
-	parentDir := filepath.Dir(targetDir)
-	newDir := filepath.Join(parentDir, "new")
-	oldDir := filepath.Join(parentDir, "old")
-
-	if err := gitutil.Clone(gitutil.CloneOptions{URL: repo, Dest: newDir}); err != nil {
-		return fmt.Errorf("clone failed: %w", err)
-	}
-
-	if _, err := os.Stat(filepath.Join(newDir, "bin", "scoop.ps1")); os.IsNotExist(err) {
-		os.RemoveAll(newDir)
-		return fmt.Errorf("scoop download failed")
-	}
-
-	if _, err := os.Stat(targetDir); err == nil {
-		os.RemoveAll(oldDir)
-		os.Rename(targetDir, oldDir)
-	}
-	os.Rename(newDir, targetDir)
-
-	return nil
-}
-
-// shimScoop creates/updates the scoop shim in the shims directory.
-// It finds the currently running executable and creates a shim for it.
-func shimScoop(currentDir string) {
-	// Find the scoop binary path (the currently running executable)
-	exePath, err := os.Executable()
-	if err != nil {
-		app.LogWarn("Failed to find scoop executable for shimming: %v", err)
-		return
-	}
-
-	shimDir := app.ShimDir(false)
-	if err := shim.Create(&shim.Config{
-		TargetPath: exePath,
-		Name:       "scoop",
-		Args:       "",
-		ShimDir:    shimDir,
-		Global:     false,
-	}); err != nil {
-		app.LogWarn("Failed to create scoop shim: %v", err)
-		return
-	}
-
-	app.LogDebug("Scoop shim updated at %s", shimDir)
 }
 
 // checkRunningProcesses checks for processes running from the app directory.

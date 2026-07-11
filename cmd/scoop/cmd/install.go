@@ -12,11 +12,11 @@ import (
 )
 
 var installFlags struct {
-	global     bool
+	global      bool
 	independent bool
-	noCache    bool
-	skipHash   bool
-	arch       string
+	noCache     bool
+	skipHash    bool
+	arch        string
 }
 
 var installCmd = &cobra.Command{
@@ -56,9 +56,13 @@ Examples:
 			}
 
 			// Resolve version
-			versionToInstall := version
-			if versionToInstall == "" {
-				versionToInstall = m.Version
+			versionToInstall := m.Version
+			if version != "" && version != m.Version {
+				m, err = install.GenerateVersionManifest(context.Background(), appName, m, version, arch, useCache)
+				if err != nil {
+					return err
+				}
+				versionToInstall = version
 			}
 
 			// Check if already installed

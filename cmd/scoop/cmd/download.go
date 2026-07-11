@@ -24,7 +24,7 @@ var downloadCmd = &cobra.Command{
 	Long:  "Download an app to the cache without installing it.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		appName := args[0]
+		appName, _, requestedVersion := parseAppRef(args[0])
 
 		// Find manifest
 		m, bucketName, err := install.FindManifest(appName)
@@ -33,6 +33,12 @@ var downloadCmd = &cobra.Command{
 		}
 
 		arch := install.GetArchitecture(downloadFlags.arch)
+		if requestedVersion != "" && requestedVersion != m.Version {
+			m, err = install.GenerateVersionManifest(context.Background(), appName, m, requestedVersion, arch, !downloadFlags.noCache)
+			if err != nil {
+				return err
+			}
+		}
 		supportedArch := m.ResolveArch(arch)
 		if supportedArch == "" {
 			return fmt.Errorf("'%s' doesn't support architecture %s", appName, arch)

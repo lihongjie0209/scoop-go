@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/bodgit/sevenzip"
@@ -14,6 +16,41 @@ import (
 // Mirrors Expand-7zipArchive from lib/decompress.ps1.
 type SevenZipExtractor struct{}
 
+// ExternalSevenZipExtractor uses the official 7z CLI for formats supported by
+// 7-Zip but not by the native 7z container reader (NSIS/SFX/PE and renamed
+// archives such as Scoop's #/dl.7z convention).
+type ExternalSevenZipExtractor struct{}
+
+func (e *ExternalSevenZipExtractor) Extract(cfg *Config) (*Result, error) {
+	dest := cfg.Destination
+	extractDest := dest
+	if cfg.ExtractDir != "" {
+		extractDest = filepath.Join(dest, ".scoop-7z-extract")
+	}
+	if err := os.MkdirAll(extractDest, 0755); err != nil {
+		return nil, err
+	}
+	cmd := exec.Command("7z", "x", "-y", "-o"+extractDest, cfg.Source)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("external 7z extraction failed: %w\nOutput: %s", err, string(output))
+	}
+	if cfg.ExtractDir != "" {
+		sourceDir := filepath.Join(extractDest, filepath.FromSlash(strings.ReplaceAll(cfg.ExtractDir, "\\", "/")))
+		if _, err := os.Stat(sourceDir); err != nil {
+			return nil, fmt.Errorf("extract_dir %q not found in archive", cfg.ExtractDir)
+		}
+		if err := moveDirContents(sourceDir, dest); err != nil {
+			return nil, err
+		}
+		_ = os.RemoveAll(extractDest)
+	}
+	if cfg.RemoveSrc {
+		_ = os.Remove(cfg.Source)
+	}
+	return &Result{}, nil
+}
+
 func (e *SevenZipExtractor) Extract(cfg *Config) (*Result, error) {
 	f, err := os.Open(cfg.Source)
 	if err != nil {
@@ -21,7 +58,11 @@ func (e *SevenZipExtractor) Extract(cfg *Config) (*Result, error) {
 	}
 	defer f.Close()
 
-	sz, err := sevenzip.NewReader(f, 0)
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	sz, err := sevenzip.NewReader(f, info.Size())
 	if err != nil {
 		return nil, fmt.Errorf("reading 7z archive: %w", err)
 	}

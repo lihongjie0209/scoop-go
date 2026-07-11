@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -39,9 +40,9 @@ type Manifest struct {
 	Hash FlexibleStrings `json:"hash,omitempty"`
 
 	// === Execution entries ===
-	Bin       any          `json:"bin,omitempty"`       // string, []string, or [][2/3]string
-	Shortcuts [][]string   `json:"shortcuts,omitempty"` // [[name, target, args?, icon?]]
-	Persist   any          `json:"persist,omitempty"`   // string, []string, or [][2]string
+	Bin       any        `json:"bin,omitempty"`       // string, []string, or [][2/3]string
+	Shortcuts [][]string `json:"shortcuts,omitempty"` // [[name, target, args?, icon?]]
+	Persist   any        `json:"persist,omitempty"`   // string, []string, or [][2]string
 
 	// === Dependencies ===
 	Depends FlexibleStrings            `json:"depends,omitempty"`
@@ -54,8 +55,8 @@ type Manifest struct {
 	PostUninstall FlexibleStrings `json:"post_uninstall,omitempty"`
 
 	// === Installer ===
-	InnoSetup  bool       `json:"innosetup,omitempty"`
-	Installer  *Installer `json:"installer,omitempty"`
+	InnoSetup   bool         `json:"innosetup,omitempty"`
+	Installer   *Installer   `json:"installer,omitempty"`
 	Uninstaller *Uninstaller `json:"uninstaller,omitempty"`
 
 	// === Environment ===
@@ -82,37 +83,36 @@ type Manifest struct {
 	Autoupdate any `json:"autoupdate,omitempty"` // AutoupdateObj
 
 	// === Metadata ===
-	Description string         `json:"description,omitempty"`
+	Description string          `json:"description,omitempty"`
 	Notes       FlexibleStrings `json:"notes,omitempty"`
-	ExtractDir  any    `json:"extract_dir,omitempty"`  // string or []string
-	ExtractTo   any    `json:"extract_to,omitempty"`   // string or []string
-	Comment     any    `json:"##,omitempty"`            // comment field
+	ExtractDir  any             `json:"extract_dir,omitempty"` // string or []string
+	ExtractTo   any             `json:"extract_to,omitempty"`  // string or []string
+	Comment     any             `json:"##,omitempty"`          // comment field
 }
 
 // ArchContent holds architecture-specific manifest fields.
 // These override the top-level fields when present.
 type ArchContent struct {
-	URL  FlexibleStrings          `json:"url,omitempty"`
-	Hash FlexibleStrings          `json:"hash,omitempty"`
-	Bin         any               `json:"bin,omitempty"`
-	Shortcuts   [][]string        `json:"shortcuts,omitempty"`
-	EnvAddPath  FlexibleStrings   `json:"env_add_path,omitempty"`
-	EnvSet      map[string]string `json:"env_set,omitempty"`
-	ExtractDir  any               `json:"extract_dir,omitempty"`
-	ExtractTo   any               `json:"extract_to,omitempty"`
-	PreInstall  FlexibleStrings          `json:"pre_install,omitempty"`
-	PostInstall FlexibleStrings          `json:"post_install,omitempty"`
-	PreUninstall FlexibleStrings         `json:"pre_uninstall,omitempty"`
-	PostUninstall FlexibleStrings        `json:"post_uninstall,omitempty"`
-	Installer   *Installer        `json:"installer,omitempty"`
-	Uninstaller *Uninstaller      `json:"uninstaller,omitempty"`
+	URL           FlexibleStrings   `json:"url,omitempty"`
+	Hash          FlexibleStrings   `json:"hash,omitempty"`
+	Bin           any               `json:"bin,omitempty"`
+	Shortcuts     [][]string        `json:"shortcuts,omitempty"`
+	EnvAddPath    FlexibleStrings   `json:"env_add_path,omitempty"`
+	EnvSet        map[string]string `json:"env_set,omitempty"`
+	ExtractDir    any               `json:"extract_dir,omitempty"`
+	ExtractTo     any               `json:"extract_to,omitempty"`
+	PreInstall    FlexibleStrings   `json:"pre_install,omitempty"`
+	PostInstall   FlexibleStrings   `json:"post_install,omitempty"`
+	PreUninstall  FlexibleStrings   `json:"pre_uninstall,omitempty"`
+	PostUninstall FlexibleStrings   `json:"post_uninstall,omitempty"`
+	Installer     *Installer        `json:"installer,omitempty"`
+	Uninstaller   *Uninstaller      `json:"uninstaller,omitempty"`
 }
 
 // Installer describes how to run the app's installer.
 type Installer struct {
-	
 	File   string          `json:"file,omitempty"`
-	Args   FlexibleStrings        `json:"args,omitempty"`
+	Args   FlexibleStrings `json:"args,omitempty"`
 	Script FlexibleStrings `json:"script,omitempty"`
 	Keep   bool            `json:"keep,omitempty"`
 }
@@ -120,7 +120,7 @@ type Installer struct {
 // Uninstaller describes how to run the app's uninstaller.
 type Uninstaller struct {
 	File   string          `json:"file,omitempty"`
-	Args   FlexibleStrings        `json:"args,omitempty"`
+	Args   FlexibleStrings `json:"args,omitempty"`
 	Script FlexibleStrings `json:"script,omitempty"`
 }
 
@@ -150,16 +150,16 @@ type AutoupdateObj struct {
 		X64bit *AutoupdateArch `json:"64bit,omitempty"`
 		Arm64  *AutoupdateArch `json:"arm64,omitempty"`
 	} `json:"architecture,omitempty"`
-	URL         any    `json:"url,omitempty"`
-	Hash        any    `json:"hash,omitempty"`
-	Bin         any    `json:"bin,omitempty"`
-	EnvAddPath  any    `json:"env_add_path,omitempty"`
-	ExtractDir  any    `json:"extract_dir,omitempty"`
-	Shortcuts   any    `json:"shortcuts,omitempty"`
-	License     any    `json:"license,omitempty"`
-	Notes       any    `json:"notes,omitempty"`
-	Persist     any    `json:"persist,omitempty"`
-	PsModule    any    `json:"psmodule,omitempty"`
+	URL        any `json:"url,omitempty"`
+	Hash       any `json:"hash,omitempty"`
+	Bin        any `json:"bin,omitempty"`
+	EnvAddPath any `json:"env_add_path,omitempty"`
+	ExtractDir any `json:"extract_dir,omitempty"`
+	Shortcuts  any `json:"shortcuts,omitempty"`
+	License    any `json:"license,omitempty"`
+	Notes      any `json:"notes,omitempty"`
+	Persist    any `json:"persist,omitempty"`
+	PsModule   any `json:"psmodule,omitempty"`
 }
 
 // AutoupdateArch is architecture-specific autoupdate overrides.
@@ -434,22 +434,118 @@ func nameFromPath(p string) string {
 	return strings.TrimSuffix(base, ext)
 }
 
-// GenerateUserManifest generates a manifest for a specific version.
-// Replaces $version placeholders in the manifest JSON with the target version.
+// GenerateUserManifest generates a manifest for a specific version by merging
+// the autoupdate template over the install properties and substituting Scoop's
+// standard version variables. Hashes are intentionally cleared; callers must
+// compute and persist hashes for the generated URLs before installation.
 func GenerateUserManifest(m *Manifest, targetVersion string) ([]byte, error) {
 	data, err := json.Marshal(m)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling manifest: %w", err)
 	}
-	content := string(data)
-	content = strings.ReplaceAll(content, "$version", targetVersion)
-	content = strings.ReplaceAll(content, "${version}", targetVersion)
-	var modified Manifest
-	if err := json.Unmarshal([]byte(content), &modified); err != nil {
-		return nil, fmt.Errorf("parsing modified manifest: %w", err)
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("decoding manifest: %w", err)
 	}
-	modified.Version = targetVersion
-	return json.MarshalIndent(modified, "", "  ")
+	auto, ok := root["autoupdate"].(map[string]any)
+	if !ok || len(auto) == 0 {
+		return nil, fmt.Errorf("manifest does not have autoupdate capability")
+	}
+
+	properties := []string{"url", "bin", "env_add_path", "extract_dir", "extract_to", "shortcuts", "license", "notes", "persist", "psmodule", "installer"}
+	for _, property := range properties {
+		if value, exists := auto[property]; exists {
+			root[property] = value
+		}
+	}
+	delete(root, "hash")
+
+	if autoArch, ok := auto["architecture"].(map[string]any); ok {
+		rootArch, _ := root["architecture"].(map[string]any)
+		if rootArch == nil {
+			rootArch = make(map[string]any)
+		}
+		for _, arch := range []string{"32bit", "64bit", "arm64"} {
+			override, ok := autoArch[arch].(map[string]any)
+			if !ok {
+				continue
+			}
+			base, _ := rootArch[arch].(map[string]any)
+			if base == nil {
+				base = make(map[string]any)
+			}
+			delete(base, "hash")
+			for _, property := range properties {
+				if value, exists := override[property]; exists {
+					base[property] = value
+				}
+			}
+			rootArch[arch] = base
+		}
+		root["architecture"] = rootArch
+	}
+
+	root["version"] = targetVersion
+	root = substituteVersionValue(root, versionSubstitutions(targetVersion)).(map[string]any)
+	return json.MarshalIndent(root, "", "  ")
+}
+
+func versionSubstitutions(version string) map[string]string {
+	normalize := func(separator string) string {
+		r := strings.NewReplacer(".", separator, "_", separator, "-", separator)
+		return r.Replace(version)
+	}
+	first := strings.Split(version, "-")[0]
+	lastParts := strings.Split(version, "-")
+	parts := strings.Split(first, ".")
+	part := func(index int) string {
+		if index < len(parts) {
+			return parts[index]
+		}
+		return ""
+	}
+	return map[string]string{
+		"${version}":         version,
+		"$version":           version,
+		"$dotVersion":        normalize("."),
+		"$underscoreVersion": normalize("_"),
+		"$dashVersion":       normalize("-"),
+		"$cleanVersion":      normalize(""),
+		"$majorVersion":      part(0),
+		"$minorVersion":      part(1),
+		"$patchVersion":      part(2),
+		"$buildVersion":      part(3),
+		"$preReleaseVersion": lastParts[len(lastParts)-1],
+	}
+}
+
+func substituteVersionValue(value any, substitutions map[string]string) any {
+	switch typed := value.(type) {
+	case string:
+		// Longest keys first prevents $version from partially consuming
+		// ${version} or another future variable with a shared prefix.
+		keys := make([]string, 0, len(substitutions))
+		for key := range substitutions {
+			keys = append(keys, key)
+		}
+		sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
+		for _, key := range keys {
+			typed = strings.ReplaceAll(typed, key, substitutions[key])
+		}
+		return typed
+	case []any:
+		for i := range typed {
+			typed[i] = substituteVersionValue(typed[i], substitutions)
+		}
+		return typed
+	case map[string]any:
+		for key, item := range typed {
+			typed[key] = substituteVersionValue(item, substitutions)
+		}
+		return typed
+	default:
+		return value
+	}
 }
 
 func NormalizeStringSlice(v any) []string {

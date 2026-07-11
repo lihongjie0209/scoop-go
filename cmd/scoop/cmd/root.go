@@ -22,6 +22,11 @@ var rootCmd = &cobra.Command{
 	Scoop is inspired by Homebrew (macOS) and apt (Linux).
 	It installs programs to ~/scoop by default, keeping them isolated from the system.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// The detached replacement helper must remain independent of Scoop
+		// configuration and directory availability.
+		if cmd.Name() == "__self-update-replace" {
+			return nil
+		}
 		if err := app.Initialize(cfgFile); err != nil {
 			return fmt.Errorf("failed to initialize scoop: %w", err)
 		}

@@ -1,11 +1,18 @@
 package install
 
 import (
+	"context"
+	"crypto/sha256"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/scoopinstaller/scoop-go/pkg/app"
+	"github.com/scoopinstaller/scoop-go/pkg/manifest"
 	"github.com/scoopinstaller/scoop-go/pkg/version"
 )
 
@@ -102,7 +109,9 @@ func TestSaveInstallInfo(t *testing.T) {
 		Bucket:  "main",
 	}
 
-	engine.saveInstallInfo(dir)
+	if err := engine.saveInstallInfo(dir); err != nil {
+		t.Fatal(err)
+	}
 
 	infoPath := filepath.Join(dir, "install.json")
 	if _, err := os.Stat(infoPath); os.IsNotExist(err) {
@@ -120,6 +129,110 @@ func TestSaveInstallInfo(t *testing.T) {
 	}
 	if !strings.Contains(content, `"bucket": "main"`) {
 		t.Errorf("expected bucket in install.json, got: %s", content)
+	}
+}
+
+func TestSaveInstallInfoReturnsWriteError(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(filePath, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	engine := &Engine{AppName: "testapp", Version: "1.0.0", Arch: "64bit"}
+	if err := engine.saveInstallInfo(filePath); err == nil {
+		t.Fatal("expected install metadata write error")
+	}
+}
+
+func TestInstallFailureRemovesNewVersionDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SCOOP", root)
+	if err := app.Initialize(filepath.Join(root, "config.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &manifest.Manifest{
+		Version: "1.0.0",
+		URL:     manifest.FlexibleStrings{"http://127.0.0.1:1/unreachable.zip"},
+	}
+	e := &Engine{
+		AppName:   "failed-app",
+		Manifest:  m,
+		Version:   m.Version,
+		Arch:      "64bit",
+		UseCache:  false,
+		CheckHash: true,
+	}
+	if err := e.Install(context.Background()); err == nil {
+		t.Fatal("expected install to fail")
+	}
+	versionDir := app.AppVersionDir(e.AppName, e.Version, false)
+	if _, err := os.Stat(versionDir); !os.IsNotExist(err) {
+		t.Fatalf("incomplete version directory still exists: %v", err)
+	}
+}
+
+func TestGenerateVersionManifestDownloadsAndPinsHash(t *testing.T) {
+	content := []byte("target-version-content")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tool-1.2.3.zip" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(content)
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	t.Setenv("SCOOP", root)
+	if err := app.Initialize(filepath.Join(root, "config.json")); err != nil {
+		t.Fatal(err)
+	}
+	source := manifest.MustParse([]byte(fmt.Sprintf(`{
+		"version":"2.0.0",
+		"homepage":"https://example.test",
+		"license":"MIT",
+		"url":%q,
+		"hash":"current-hash",
+		"autoupdate":{"url":%q}
+	}`, server.URL+"/tool-2.0.0.zip", server.URL+"/tool-$version.zip")))
+
+	generated, err := GenerateVersionManifest(context.Background(), "tool", source, "1.2.3", "64bit", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := generated.GetURL("64bit"); len(got) != 1 || got[0] != server.URL+"/tool-1.2.3.zip" {
+		t.Fatalf("generated URL = %#v", got)
+	}
+	wantHash := fmt.Sprintf("%x", sha256.Sum256(content))
+	if got := generated.GetHash("64bit"); len(got) != 1 || got[0] != wantHash {
+		t.Fatalf("generated hash = %#v, want %s", got, wantHash)
+	}
+	cachePath := filepath.Join(app.Dirs().CacheDir, fmt.Sprintf("tool#1.2.3#%s", shortHash(server.URL+"/tool-1.2.3.zip")))
+	if _, err := os.Stat(cachePath); err != nil {
+		t.Fatalf("generated download was not cached: %v", err)
+	}
+}
+
+func TestPersistDataCreatesLinkForInitiallyMissingDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SCOOP", root)
+	if err := app.Initialize(filepath.Join(root, "config.json")); err != nil {
+		t.Fatal(err)
+	}
+	versionDir := app.AppVersionDir("persist-app", "1.0.0", false)
+	if err := os.MkdirAll(versionDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := &manifest.Manifest{Persist: "data"}
+	if err := PersistData("persist-app", false, m, versionDir); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(versionDir, "data")); err != nil || !info.IsDir() {
+		t.Fatalf("persist source link missing: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(app.PersistDir("persist-app", false), "data")); err != nil || !info.IsDir() {
+		t.Fatalf("persist target missing: %v", err)
 	}
 }
 

@@ -149,6 +149,12 @@ func (d *Downloader) Download(ctx context.Context) (*Result, error) {
 	useMultipart := cfg.MultiConnections > 1 && d.supportsRange(ctx, resolvedURL)
 	if useMultipart {
 		result, err = d.downloadMultiPart(ctx, resolvedURL)
+		if err != nil {
+			// Some servers advertise ranges but ignore Range on GET. Fall back
+			// to one connection instead of leaving a corrupt sparse file.
+			os.Remove(cfg.Destination)
+			result, err = d.downloadSingleWithRetry(ctx, resolvedURL)
+		}
 	} else {
 		result, err = d.downloadSingleWithRetry(ctx, resolvedURL)
 	}
@@ -423,7 +429,8 @@ func (d *Downloader) downloadMultiPart(ctx context.Context, url string) (*Result
 
 	// Verify hash
 	if cfg.ExpectedHash != "" {
-		hash := sha256Bytes(dest)
+		algo, _ := ParseHash(cfg.ExpectedHash)
+		hash := hashFile(dest, algo)
 		if err := verifyHash(cfg.ExpectedHash, hash); err != nil {
 			os.Remove(dest)
 			return nil, err
@@ -450,7 +457,7 @@ func (d *Downloader) downloadRange(ctx context.Context, url, dest string, start,
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusPartialContent {
 		return fmt.Errorf("range request failed: HTTP %d", resp.StatusCode)
 	}
 
@@ -525,7 +532,7 @@ func (d *Downloader) supportsRange(ctx context.Context, rawURL string) bool {
 	}
 	defer resp.Body.Close()
 
-	return resp.Header.Get("Accept-Ranges") == "bytes" || resp.ContentLength > 10*1024*1024
+	return resp.StatusCode == http.StatusOK && resp.Header.Get("Accept-Ranges") == "bytes"
 }
 
 // cacheFile copies a downloaded file to the cache directory.
@@ -560,7 +567,8 @@ func (d *Downloader) verifyAndReturn(path string) (*Result, error) {
 		return &Result{Path: path, TotalBytes: info.Size()}, nil
 	}
 
-	hashStr := sha256Bytes(path)
+	algo, _ := ParseHash(d.config.ExpectedHash)
+	hashStr := hashFile(path, algo)
 	if err := verifyHash(d.config.ExpectedHash, hashStr); err != nil {
 		os.Remove(path)
 		return nil, err
@@ -748,13 +756,20 @@ func verifyHash(expected, actual string) error {
 }
 
 func sha256Bytes(path string) string {
+	return hashFile(path, "sha256")
+}
+
+func hashFile(path, algo string) string {
 	f, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
 	defer f.Close()
 
-	h := sha256.New()
+	h := newHash(algo)
+	if h == nil {
+		return ""
+	}
 	if _, err := io.Copy(h, f); err != nil {
 		return ""
 	}
