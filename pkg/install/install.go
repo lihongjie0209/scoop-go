@@ -475,6 +475,12 @@ func powerShellCompatibilityPreamble() string {
 			"function get_config($k){$null};"+
 			"function Add-Path($p,$g){$env:Path=$p+';'+$env:Path};"+
 			"function Remove-Path($p,$g){$env:Path=($env:Path-split';'|where{$_-ne$p})-join';'};"+
+			"function versiondir($app,$v,$g){$d=$appsdir;$d=join-path $d $app;$d=join-path $d $v;$d};"+
+			"function appdir($app,$g){join-path $appsdir $app};"+
+			"function warn($msg){write-host 'WARN: '+$msg -foregroundcolor yellow};"+
+			"function get_config($k){$null};"+
+			"function Add-Path($p,$g){$env:Path=$p+';'+$env:Path};"+
+			"function Remove-Path($p,$g){$env:Path=($env:Path-split';'|where{$_-ne$p})-join';'};"+
 		exe,
 	)
 }
@@ -511,13 +517,7 @@ func (e *Engine) runInstaller(ctx context.Context, m *manifest.Manifest, dir str
 	// Variable substitution values used for both script and file installer args
 	substitutions := map[string]string{
 		"$dir":     dir,
-		"$global":  fmt.Sprintf("%v",
-			"function versiondir($app,$v,$g){$d=$appsdir;$d=join-path $d $app;$d=join-path $d $v;$d};"+
-			"function appdir($app,$g){join-path $appsdir $app};"+
-			"function warn($msg){write-host 'WARN: '+$msg -foregroundcolor yellow};"+
-			"function get_config($k){$null};"+
-			"function Add-Path($p,$g){$env:Path=$p+';'+$env:Path};"+
-			"function Remove-Path($p,$g){$env:Path=($env:Path-split';'|where{$_-ne$p})-join';'};",e.Global),
+		"$global":  fmt.Sprintf("%v", e.Global),
 		"$version": e.Version,
 	}
 
