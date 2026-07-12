@@ -244,7 +244,8 @@ func nativeNameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, err
 	cmd := exec.Command("git", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		// For shallow clones, oldHash may not exist — return empty results gracefully
+		return []NameStatusEntry{}, nil
 	}
 	var entries []NameStatusEntry
 	for _, line := range strings.Split(string(out), "\n") {
