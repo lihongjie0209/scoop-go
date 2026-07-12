@@ -166,7 +166,7 @@ func TestHeadHashNonRepo(t *testing.T) {
 
 func TestNativeNameStatusParserViaFallback(t *testing.T) {
 	// ensure nativeNameStatus parsing path works with empty invalid repo
-	if _, err := nativeNameStatus(t.TempDir(), "aaa", "bbb"); err == nil {
+	if _, err := NameStatus(t.TempDir(), "", "aaa"); err == nil {
 		// git may still error — that's fine
 		t.Log("nativeNameStatus returned nil error unexpectedly but ok if git available with weird state")
 	}

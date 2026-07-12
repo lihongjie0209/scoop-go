@@ -1,6 +1,7 @@
 // Package gitutil wraps go-git operations for Scoop's Git needs.
-// For large repositories where go-git has known limitations (OOM, unexpected EOF),
-// it falls back to the native git CLI.
+// Uses pure-Go go-git for all operations. Falls back to native git CLI
+// only for cloning very large repositories where go-git has known memory
+// limitations (e.g., the Extras bucket with 40K+ manifests).
 package gitutil
 
 import (
@@ -27,39 +28,29 @@ type CloneOptions struct {
 	URL   string
 	Dest  string
 	Quiet bool
-	// Depth limits the clone to the specified number of commits (shallow clone).
-	// 0 means full history. For large repos, Depth: 1 is recommended to avoid
-	// go-git memory issues.
 	Depth int
 }
 
-// Clone performs a git clone. For large repositories it first attempts a
-// shallow go-git clone, and falls back to native git CLI if go-git fails.
+// Clone performs a git clone. Tries go-git first with shallow options,
+// falls back to native git CLI for large repos where go-git struggles.
 func Clone(opts CloneOptions) error {
 	if opts.Depth == 0 {
-		opts.Depth = 1 // Default to shallow clone for performance
+		opts.Depth = 1
 	}
-
-	// Try go-git first with shallow clone options
 	gogitOpts := &gogit.CloneOptions{
 		URL:          opts.URL,
 		Depth:        opts.Depth,
 		SingleBranch: true,
 		Tags:         gogit.NoTags,
 	}
-	if opts.Quiet {
-		gogitOpts.Progress = nil
-	}
-
 	_, err := gogit.PlainClone(opts.Dest, false, gogitOpts)
 	if err == nil {
 		return nil
 	}
-
+	// go-git failed — fall back to native git CLI for large repos
 	return nativeClone(opts)
 }
 
-// nativeClone falls back to the native git command-line tool.
 func nativeClone(opts CloneOptions) error {
 	args := []string{"clone"}
 	if opts.Quiet {
@@ -69,45 +60,29 @@ func nativeClone(opts CloneOptions) error {
 		args = append(args, "--depth", fmt.Sprintf("%d", opts.Depth))
 	}
 	args = append(args, "--single-branch", "--no-tags", opts.URL, opts.Dest)
-
 	cmd := exec.Command("git", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("git clone (native fallback): %w", err)
 	}
 	return nil
 }
 
-// Pull opens a repo and pulls latest changes.
-// For shallow clones (Depth > 0), it uses native git for reliable pull/fetch behavior.
+// Pull updates a repo via go-git. Shallow-cloned repos should be
+// updated via bucket.Sync (re-clone) instead of Pull.
 func Pull(repoPath string) error {
-	// Try go-git first
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
 		return fmt.Errorf("opening repo: %w", err)
 	}
-
 	wt, err := repo.Worktree()
 	if err != nil {
 		return err
 	}
-
 	err = wt.Pull(&gogit.PullOptions{})
 	if err != nil && err != gogit.NoErrAlreadyUpToDate {
-		return nativePull(repoPath)
-	}
-	return nil
-}
-
-// nativePull updates a repository using the native git CLI.
-func nativePull(repoPath string) error {
-	cmd := exec.Command("git", "-C", repoPath, "pull", "--ff-only")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git pull (native fallback): %w", err)
+		return fmt.Errorf("git pull: %w", err)
 	}
 	return nil
 }
@@ -118,12 +93,10 @@ func Fetch(repoPath string) error {
 	if err != nil {
 		return err
 	}
-
 	remote, err := repo.Remote("origin")
 	if err != nil {
 		return err
 	}
-
 	err = remote.Fetch(&gogit.FetchOptions{})
 	if err != nil && err != gogit.NoErrAlreadyUpToDate {
 		return fmt.Errorf("git fetch: %w", err)
@@ -137,12 +110,10 @@ func CurrentBranch(repoPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
 	ref, err := repo.Head()
 	if err != nil {
 		return "", err
 	}
-
 	if ref.Name().IsBranch() {
 		return ref.Name().Short(), nil
 	}
@@ -150,13 +121,63 @@ func CurrentBranch(repoPath string) (string, error) {
 }
 
 // HeadHash returns the full SHA of HEAD.
+func HeadHash(repoPath string) (string, error) {
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return "", err
+	}
+	ref, err := repo.Head()
+	if err != nil {
+		return "", err
+	}
+	return ref.Hash().String(), nil
+}
+
+// RemoteURL returns the origin remote URL.
+func RemoteURL(repoPath string) (string, error) {
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return "", err
+	}
+	remote, err := repo.Remote("origin")
+	if err != nil {
+		return "", err
+	}
+	urls := remote.Config().URLs
+	if len(urls) > 0 {
+		return urls[0], nil
+	}
+	return "", fmt.Errorf("no remote URL configured")
+}
+
+// IsRepo checks if a directory is a git repository.
+func IsRepo(path string) bool {
+	_, err := gogit.PlainOpen(path)
+	return err == nil
+}
+
+// LsRemote verifies a remote repository exists and is accessible.
+func LsRemote(url string) error {
+	ep, err := transport.NewEndpoint(url)
+	if err != nil {
+		return fmt.Errorf("invalid remote URL: %w", err)
+	}
+	_, err = gogit.NewRemote(nil, &gogitConfig.RemoteConfig{
+		Name: "origin",
+		URLs: []string{ep.String()},
+	}).List(&gogit.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("remote not accessible: %w", err)
+	}
+	return nil
+}
+
 // NameStatus returns file changes between two commits (git diff --name-status).
-// oldHash may be empty to mean the empty tree (all files as added).
+// Uses go-git; for shallow clones where oldHash doesn't exist, returns empty.
 func NameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, error) {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
-		// Fallback to native git
-		return nativeNameStatus(repoPath, oldHash, newHash)
+		return nil, nil
 	}
 	newHash = strings.TrimSpace(newHash)
 	oldHash = strings.TrimSpace(oldHash)
@@ -165,7 +186,7 @@ func NameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, error) {
 	}
 	newCommit, err := repo.CommitObject(plumbing.NewHash(newHash))
 	if err != nil {
-		return nativeNameStatus(repoPath, oldHash, newHash)
+		return nil, nil // shallow clone — new commit exists locally
 	}
 	newTree, err := newCommit.Tree()
 	if err != nil {
@@ -175,14 +196,13 @@ func NameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, error) {
 	if oldHash != "" {
 		oldCommit, err := repo.CommitObject(plumbing.NewHash(oldHash))
 		if err != nil {
-			return nativeNameStatus(repoPath, oldHash, newHash)
+			return nil, nil // shallow clone — old commit not in local history
 		}
 		oldTree, err = oldCommit.Tree()
 		if err != nil {
 			return nil, err
 		}
 	}
-
 	var changes object.Changes
 	if oldTree == nil {
 		changes, err = object.DiffTree(nil, newTree)
@@ -190,7 +210,7 @@ func NameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, error) {
 		changes, err = object.DiffTree(oldTree, newTree)
 	}
 	if err != nil {
-		return nativeNameStatus(repoPath, oldHash, newHash)
+		return nil, nil
 	}
 	var out []NameStatusEntry
 	for _, ch := range changes {
@@ -200,7 +220,6 @@ func NameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, error) {
 		}
 		from, to, err := ch.Files()
 		if err != nil {
-			// deleted/added may error on one side
 			from, to = nil, nil
 		}
 		switch action {
@@ -234,125 +253,21 @@ type NameStatusEntry struct {
 	OldPath string
 }
 
-func nativeNameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, error) {
-	args := []string{"-C", repoPath, "diff", "--name-status"}
-	if oldHash != "" {
-		args = append(args, oldHash, newHash)
-	} else {
-		args = append(args, newHash)
-	}
-	cmd := exec.Command("git", args...)
-	out, err := cmd.Output()
-	if err != nil {
-		// For shallow clones, oldHash may not exist — return empty results gracefully
-		return []NameStatusEntry{}, nil
-	}
-	var entries []NameStatusEntry
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		st := fields[0]
-		if len(st) > 0 && (st[0] == 'R' || st[0] == 'C') && len(fields) >= 3 {
-			entries = append(entries, NameStatusEntry{Status: string(st[0]), OldPath: fields[1], Path: fields[2]})
-			continue
-		}
-		entries = append(entries, NameStatusEntry{Status: string(st[0]), Path: fields[1]})
-	}
-	return entries, nil
-}
-
-func HeadHash(repoPath string) (string, error) {
-	repo, err := gogit.PlainOpen(repoPath)
-	if err != nil {
-		return "", err
-	}
-
-	ref, err := repo.Head()
-	if err != nil {
-		return "", err
-	}
-
-	return ref.Hash().String(), nil
-}
-
-// RemoteURL returns the origin remote URL.
-func RemoteURL(repoPath string) (string, error) {
-	repo, err := gogit.PlainOpen(repoPath)
-	if err != nil {
-		return "", err
-	}
-
-	remote, err := repo.Remote("origin")
-	if err != nil {
-		return "", err
-	}
-
-	urls := remote.Config().URLs
-	if len(urls) > 0 {
-		return urls[0], nil
-	}
-	return "", fmt.Errorf("no remote URL configured")
-}
-
-// CommitsAhead returns the number of commits ahead of a base ref.
-func CommitsAhead(repoPath, baseRef string) (int, error) {
-	repo, err := gogit.PlainOpen(repoPath)
-	if err != nil {
-		return 0, err
-	}
-
-	baseHash := plumbing.NewHash(baseRef)
-
-	head, err := repo.Head()
-	if err != nil {
-		return 0, err
-	}
-
-	cIter, err := repo.Log(&gogit.LogOptions{From: head.Hash()})
-	if err != nil {
-		return 0, err
-	}
-
-	count := 0
-	err = cIter.ForEach(func(c *object.Commit) error {
-		if c.Hash == baseHash {
-			return fmt.Errorf("stop")
-		}
-		count++
-		return nil
-	})
-	if err != nil && err.Error() != "stop" {
-		return 0, err
-	}
-
-	return count, nil
-}
-
 // CommitsBehindHead returns commits between HEAD and a target ref (HEAD..target).
 func CommitsBehindHead(repoPath, targetRef string) (int, error) {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
 		return 0, err
 	}
-
 	head, err := repo.Head()
 	if err != nil {
 		return 0, err
 	}
-
 	targetHash := plumbing.NewHash(targetRef)
-
 	cIter, err := repo.Log(&gogit.LogOptions{From: targetHash})
 	if err != nil {
 		return 0, err
 	}
-
 	count := 0
 	err = cIter.ForEach(func(c *object.Commit) error {
 		if c.Hash == head.Hash() {
@@ -364,7 +279,35 @@ func CommitsBehindHead(repoPath, targetRef string) (int, error) {
 	if err != nil && err.Error() != "stop" {
 		return 0, err
 	}
+	return count, nil
+}
 
+// CommitsAhead returns the number of commits ahead of a base ref.
+func CommitsAhead(repoPath, baseRef string) (int, error) {
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return 0, err
+	}
+	baseHash := plumbing.NewHash(baseRef)
+	head, err := repo.Head()
+	if err != nil {
+		return 0, err
+	}
+	cIter, err := repo.Log(&gogit.LogOptions{From: head.Hash()})
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	err = cIter.ForEach(func(c *object.Commit) error {
+		if c.Hash == baseHash {
+			return fmt.Errorf("stop")
+		}
+		count++
+		return nil
+	})
+	if err != nil && err.Error() != "stop" {
+		return 0, err
+	}
 	return count, nil
 }
 
@@ -374,59 +317,29 @@ func HasUncommittedChanges(repoPath string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-
 	wt, err := repo.Worktree()
 	if err != nil {
 		return false, err
 	}
-
 	status, err := wt.Status()
 	if err != nil {
 		return false, err
 	}
-
 	return !status.IsClean(), nil
 }
 
-// LsRemote verifies a remote repository exists and is accessible.
-func LsRemote(url string) error {
-	ep, err := transport.NewEndpoint(url)
-	if err != nil {
-		return fmt.Errorf("invalid remote URL: %w", err)
-	}
-
-	_, err = gogit.NewRemote(nil, &gogitConfig.RemoteConfig{
-		Name: "origin",
-		URLs: []string{ep.String()},
-	}).List(&gogit.ListOptions{})
-	if err != nil {
-		return fmt.Errorf("remote not accessible: %w", err)
-	}
-
-	return nil
-}
-
-// IsRepo checks if a directory is a git repository.
-func IsRepo(path string) bool {
-	_, err := gogit.PlainOpen(path)
-	return err == nil
-}
-
-// LogRange returns the one-line commit messages between oldHash and newHash.
+// LogRange returns commit messages between oldHash and newHash.
 func LogRange(repoPath, oldHash, newHash string) ([]string, error) {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
 		return nil, err
 	}
-
 	old := plumbing.NewHash(oldHash)
 	new := plumbing.NewHash(newHash)
-
 	cIter, err := repo.Log(&gogit.LogOptions{From: new})
 	if err != nil {
 		return nil, err
 	}
-
 	var messages []string
 	err = cIter.ForEach(func(c *object.Commit) error {
 		if c.Hash == old {
@@ -440,10 +353,8 @@ func LogRange(repoPath, oldHash, newHash string) ([]string, error) {
 	if err != nil && err.Error() != "stop" {
 		return nil, err
 	}
-
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
-
 	return messages, nil
 }
