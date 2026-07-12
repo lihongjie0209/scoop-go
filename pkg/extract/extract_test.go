@@ -499,3 +499,23 @@ func TestDetectRpm(t *testing.T) {
 		t.Errorf("expected RpmExtractor, got %T", e)
 	}
 }
+
+func TestSanitizeZipEntry(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"HyperSpec:", "HyperSpec_"},
+		{"normal/pa??th/file.txt", "normal/pa??th/file.txt"},
+		{"C:drive/file.txt", "C_drive/file.txt"},
+		{"already_clean", "already_clean"},
+		{"mixed:path:with:colons", "mixed_path_with_colons"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := sanitizeZipEntry(tt.input)
+		if got != tt.want {
+			t.Errorf("sanitizeZipEntry(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}

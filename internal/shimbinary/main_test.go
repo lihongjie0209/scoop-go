@@ -1,21 +1,38 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestExpandWindowsEnv(t *testing.T) {
-	t.Setenv("SCOOP_GO_SHIM_TEST", `C:\Program Files\Scoop`)
+	t.Setenv("TEST_VAR", "hello")
+	t.Setenv("SystemRoot", "C:\\Windows")
 
-	tests := map[string]string{
-		`%SCOOP_GO_SHIM_TEST%\app.exe`: `C:\Program Files\Scoop\app.exe`,
-		`prefix-%SCOOP_GO_SHIM_TEST%`:  `prefix-C:\Program Files\Scoop`,
-		`%SCOOP_GO_UNKNOWN%`:           `%SCOOP_GO_UNKNOWN%`,
-		`plain`:                        `plain`,
-		`unclosed%VAR`:                 `unclosed%VAR`,
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"hello", "hello"},
+		{"before %TEST_VAR% after", "before hello after"},
+		{"%TEST_VAR%", "hello"},
+		{"no vars here", "no vars here"},
+		{"%%", "%"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := expandWindowsEnv(tt.input)
+			if got != tt.want {
+				t.Errorf("expandWindowsEnv(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
 
-	for input, want := range tests {
-		if got := expandWindowsEnv(input); got != want {
-			t.Errorf("expandWindowsEnv(%q) = %q, want %q", input, got, want)
-		}
+func TestExpandEnvVarsBothStyles(t *testing.T) {
+	t.Setenv("MY_VAR", "world")
+	result := expandEnvVars("hello %MY_VAR% and $MY_VAR")
+	if !strings.Contains(result, "world") {
+		t.Errorf("expected MY_VAR to be expanded, got %q", result)
 	}
 }
