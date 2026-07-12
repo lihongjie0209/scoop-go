@@ -79,38 +79,47 @@ func (e *Engine) Install(ctx context.Context) (retErr error) {
 
 	app.LogInfo("Installing '%s' (%s) [%s]", appName, version, e.Arch)
 
-	// Step 1: Create version directory
+	// Staging: download/extract/hooks run in a sibling staging directory, then
+	// promote atomically into the version directory before system integrations.
 	versionDir := app.AppVersionDir(appName, version, e.Global)
 	_, statErr := os.Stat(versionDir)
-	createdVersionDir := os.IsNotExist(statErr)
-	if err := os.MkdirAll(versionDir, 0755); err != nil {
-		return fmt.Errorf("creating version directory: %w", err)
+	versionExisted := !os.IsNotExist(statErr)
+	createdVersionDir := !versionExisted
+
+	stageDir, err := PrepareStaging(versionDir)
+	if err != nil {
+		return fmt.Errorf("preparing staging directory: %w", err)
 	}
-	originalDir := versionDir
+	promoted := false
 	integrationStarted := false
+	journal := NewIntegrationJournal()
 	defer func() {
 		if retErr == nil {
 			return
 		}
 		if integrationStarted {
-			e.rollbackIntegrations(m, versionDir)
+			journal.Rollback(versionDir, e.Global, appName)
 		}
-		if createdVersionDir {
+		if !promoted {
+			_ = DiscardStaging(stageDir)
+		} else if createdVersionDir {
 			if err := os.RemoveAll(versionDir); err != nil {
 				app.LogWarn("Failed to remove incomplete install directory: %v", err)
 			}
 		}
 	}()
 
+	// Work in staging until payload is complete
+	workDir := stageDir
+
 	// Step 2: Download files
-	downloadedFiles, err := e.downloadFiles(ctx, m, versionDir)
+	downloadedFiles, err := e.downloadFiles(ctx, m, workDir)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
 
 	// Step 3: Extract archives
-	if err := e.extractFiles(ctx, m, versionDir, downloadedFiles); err != nil {
-		// Extraction failed -- remove cache files so retry re-downloads
+	if err := e.extractFiles(ctx, m, workDir, downloadedFiles); err != nil {
 		for _, f := range downloadedFiles {
 			cacheKey := fmt.Sprintf("%s#%s#%s", e.AppName, e.Version, shortHash(f))
 			cachedPath := filepath.Join(app.Dirs().CacheDir, cacheKey)
@@ -121,30 +130,62 @@ func (e *Engine) Install(ctx context.Context) (retErr error) {
 	}
 
 	// Step 4: Run pre_install hooks
-	if err := e.runHooks(ctx, m.GetPreInstall(e.Arch), versionDir); err != nil {
+	if err := e.runHooks(ctx, m.GetPreInstall(e.Arch), workDir); err != nil {
 		return fmt.Errorf("pre_install hook failed: %w", err)
 	}
 
 	// Step 5: Run installer (if configured)
-	if err := e.runInstaller(ctx, m, versionDir, downloadedFiles); err != nil {
+	if err := e.runInstaller(ctx, m, workDir, downloadedFiles); err != nil {
 		return fmt.Errorf("installer failed: %w", err)
 	}
 
-	// Step 6: Create current version link
+	// Persist data against the final version path layout (paths in version dir)
+	// Save metadata into staging before promote so the version dir is complete.
+	if err := e.saveInstallInfo(workDir); err != nil {
+		return fmt.Errorf("saving install metadata: %w", err)
+	}
+	if err := e.saveManifest(workDir); err != nil {
+		return fmt.Errorf("saving installed manifest: %w", err)
+	}
+
+	// Atomic promote staging -> version directory
+	if versionExisted {
+		if err := PromoteStagingForce(workDir, versionDir); err != nil {
+			return fmt.Errorf("promoting staged install: %w", err)
+		}
+	} else {
+		if err := PromoteStaging(workDir, versionDir); err != nil {
+			return fmt.Errorf("promoting staged install: %w", err)
+		}
+	}
+	promoted = true
+	originalDir := versionDir
+	stageDir = "" // promoted; do not discard
+
+	// Step 6: Create current version link (system integration starts here)
 	integrationStarted = true
 	currentDir, err := e.linkCurrent(versionDir)
 	if err != nil {
 		return fmt.Errorf("linking current: %w", err)
 	}
+	journal.MarkCurrentLinked()
 
 	// Step 7a: Create shims for all binaries
 	if err := e.createShims(m, currentDir); err != nil {
 		return fmt.Errorf("creating shims: %w", err)
 	}
+	for _, bin := range manifest.BinEntries(m.GetBin(e.Arch)) {
+		journal.RecordShim(bin[1])
+	}
 
 	// Step 7b: Create start menu shortcuts
 	if err := e.createShortcuts(m, currentDir); err != nil {
 		return fmt.Errorf("creating shortcuts: %w", err)
+	}
+	for _, sc := range m.GetShortcuts(e.Arch) {
+		if len(sc) > 1 {
+			journal.RecordShortcut(sc[1])
+		}
 	}
 
 	// Step 7c: Install PowerShell module
@@ -156,13 +197,19 @@ func (e *Engine) Install(ctx context.Context) (retErr error) {
 	if err := e.envAddPath(m, currentDir); err != nil {
 		return fmt.Errorf("adding PATH: %w", err)
 	}
+	for _, p := range m.GetEnvAddPath(e.Arch) {
+		journal.RecordPath(filepath.Join(currentDir, p))
+	}
 
 	// Step 7e: Set environment variables
 	if err := e.envSet(m); err != nil {
 		return fmt.Errorf("setting env: %w", err)
 	}
+	for name := range m.GetEnvSet(e.Arch) {
+		journal.RecordEnv(name)
+	}
 
-	// Step 8: Persist data
+	// Step 8: Persist data (after promote so links point at final version dir)
 	if err := e.persistData(ctx, m, originalDir); err != nil {
 		return fmt.Errorf("persisting data: %w", err)
 	}
@@ -172,20 +219,20 @@ func (e *Engine) Install(ctx context.Context) (retErr error) {
 		return fmt.Errorf("post_install hook failed: %w", err)
 	}
 
-	// Save install info + manifest
-	if err := e.saveInstallInfo(versionDir); err != nil {
-		return fmt.Errorf("saving install metadata: %w", err)
-	}
-	if err := e.saveManifest(versionDir); err != nil {
-		return fmt.Errorf("saving installed manifest: %w", err)
-	}
-
-	// Show notes
+	// Show notes (with Scoop variable substitution)
 	if len(m.Notes) > 0 {
 		fmt.Println()
 		app.LogInfo("Notes")
 		app.LogInfo("-----")
-		for _, note := range m.Notes {
+		notes := SubstituteNotes(m.Notes, NoteVars{
+			Dir:         currentDir,
+			OriginalDir: originalDir,
+			PersistDir:  app.PersistDir(appName, e.Global),
+			Version:     version,
+			App:         appName,
+			Global:      e.Global,
+		})
+		for _, note := range notes {
 			fmt.Println(note)
 		}
 	}
@@ -1094,8 +1141,9 @@ func EnsureDir(path string) error {
 }
 
 // GenerateVersionManifest applies a manifest's autoupdate templates for a
-// requested version, downloads each generated URL, and pins the resulting
-// SHA-256 hashes. The normal install pipeline then consumes the verified cache.
+// requested version and pins hashes. It first tries Scoop autoupdate hash
+// extraction (extract/json/github); if that fails it downloads the asset and
+// computes SHA-256 (PowerShell fallback behavior).
 func GenerateVersionManifest(ctx context.Context, appName string, source *manifest.Manifest, targetVersion, arch string, useCache bool) (*manifest.Manifest, error) {
 	generatedJSON, err := manifest.GenerateUserManifest(source, targetVersion)
 	if err != nil {
@@ -1124,8 +1172,21 @@ func GenerateVersionManifest(ctx context.Context, appName string, source *manife
 		proxy = cfg.Config().Proxy
 		privateHosts = cfg.Config().PrivateHosts
 	}
+
+	hashCfg := manifest.AutoupdateHashConfig(source.Autoupdate, resolvedArch)
+	client := &http.Client{Timeout: 45 * time.Second}
+	remoteHashes := manifest.FetchHashesForURLs(ctx, client, []string(urls), targetVersion, hashCfg, githubToken)
+
 	hashes := make(manifest.FlexibleStrings, 0, len(urls))
-	for _, url := range urls {
+	for i, url := range urls {
+		if i < len(remoteHashes) && remoteHashes[i] != "" {
+			app.LogInfo("Found hash for %s via autoupdate", filepath.Base(url))
+			hashes = append(hashes, remoteHashes[i])
+			continue
+		}
+
+		// Fallback: download and compute SHA-256 (mirrors PowerShell get_hash_for_app)
+		app.LogInfo("Downloading %s to compute hash", filepath.Base(url))
 		cacheKey := fmt.Sprintf("%s#%s#%s", appName, targetVersion, shortHash(url))
 		cachePath := filepath.Join(app.Dirs().CacheDir, cacheKey)
 		downloadPath := cachePath + ".generate"

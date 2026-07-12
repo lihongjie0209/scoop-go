@@ -4,10 +4,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/scoopinstaller/scoop-go/pkg/app"
 	"github.com/spf13/cobra"
 )
+
+var aliasFlags struct {
+	verbose bool
+}
 
 var aliasCmd = &cobra.Command{
 	Use:   "alias add|rm|list [name] [command]",
@@ -16,7 +21,10 @@ var aliasCmd = &cobra.Command{
 
   alias add <name> <command> [description]   Add an alias
   alias rm <name>                            Remove an alias
-  alias list                                 List all aliases`,
+  alias list                                 List all aliases
+
+Options:
+  -v, --verbose   Show command body when listing`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return cmd.Help()
@@ -99,29 +107,29 @@ func aliasList() error {
 		shimFile := filepath.Join(app.ShimDir(false), alias+".ps1")
 		data, err := os.ReadFile(shimFile)
 		desc := ""
+		body := ""
 		if err == nil {
 			content := string(data)
-			if len(content) > 0 && content[0] == '#' {
-				idx := stringsIndexByte(content, '\n')
-				if idx > 1 {
-					desc = content[1 : idx-1]
+			lines := strings.Split(content, "\n")
+			if len(lines) > 0 && strings.HasPrefix(lines[0], "#") {
+				desc = strings.TrimSpace(strings.TrimPrefix(lines[0], "#"))
+				if len(lines) > 1 {
+					body = strings.TrimSpace(strings.Join(lines[1:], "\n"))
 				}
+			} else {
+				body = strings.TrimSpace(content)
 			}
 		}
-		fmt.Printf("%-20s %s", name, desc)
+		if aliasFlags.verbose {
+			fmt.Printf("%-20s %s\n  %s\n", name, desc, body)
+		} else {
+			fmt.Printf("%-20s %s\n", name, desc)
+		}
 	}
 	return nil
 }
 
-func stringsIndexByte(s string, b byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == b {
-			return i
-		}
-	}
-	return -1
-}
-
 func init() {
 	rootCmd.AddCommand(aliasCmd)
+	aliasCmd.Flags().BoolVarP(&aliasFlags.verbose, "verbose", "v", false, "Show alias command body when listing")
 }

@@ -2,12 +2,20 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/scoopinstaller/scoop-go/pkg/app"
+	"github.com/scoopinstaller/scoop-go/pkg/bucket"
 	"github.com/scoopinstaller/scoop-go/pkg/install"
 	"github.com/scoopinstaller/scoop-go/pkg/manifest"
 	"github.com/spf13/cobra"
 )
+
+var infoFlags struct {
+	verbose bool
+}
 
 var infoCmd = &cobra.Command{
 	Use:   "info <app>",
@@ -36,6 +44,19 @@ var infoCmd = &cobra.Command{
 			fmt.Printf("Source:   %s\n", source)
 		} else {
 			fmt.Printf("Source:   local\n")
+		}
+		if infoFlags.verbose {
+			if bucketName != "" {
+				if p := filepath.Join(bucket.ManifestDir(bucketName), appName+".json"); pathExists(p) {
+					fmt.Printf("Manifest: %s\n", p)
+				}
+			}
+			for _, g := range []bool{false, true} {
+				cur := app.AppCurrentDir(appName, g)
+				if pathExists(cur) {
+					fmt.Printf("Installed:%s (%s)\n", cur, map[bool]string{false: "user", true: "global"}[g])
+				}
+			}
 		}
 		fmt.Printf("Summary:  %s\n", m.Description)
 		fmt.Printf("Website:  %s\n", m.Homepage)
@@ -130,7 +151,13 @@ var infoCmd = &cobra.Command{
 	},
 }
 
+func pathExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
 func init() {
 	rootCmd.AddCommand(infoCmd)
+	infoCmd.Flags().BoolVarP(&infoFlags.verbose, "verbose", "v", false, "Show full paths for installed app and manifest")
 }
 

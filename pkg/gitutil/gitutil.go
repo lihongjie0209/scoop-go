@@ -10,10 +10,11 @@ import (
 	"strings"
 
 	gogit "github.com/go-git/go-git/v5"
+	gogitConfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
-	gogitConfig "github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/utils/merkletrie"
 )
 
 // CheckAvailable verifies go-git is functional.
@@ -149,6 +150,122 @@ func CurrentBranch(repoPath string) (string, error) {
 }
 
 // HeadHash returns the full SHA of HEAD.
+// NameStatus returns file changes between two commits (git diff --name-status).
+// oldHash may be empty to mean the empty tree (all files as added).
+func NameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, error) {
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		// Fallback to native git
+		return nativeNameStatus(repoPath, oldHash, newHash)
+	}
+	newHash = strings.TrimSpace(newHash)
+	oldHash = strings.TrimSpace(oldHash)
+	if newHash == "" {
+		return nil, fmt.Errorf("new hash required")
+	}
+	newCommit, err := repo.CommitObject(plumbing.NewHash(newHash))
+	if err != nil {
+		return nativeNameStatus(repoPath, oldHash, newHash)
+	}
+	newTree, err := newCommit.Tree()
+	if err != nil {
+		return nil, err
+	}
+	var oldTree *object.Tree
+	if oldHash != "" {
+		oldCommit, err := repo.CommitObject(plumbing.NewHash(oldHash))
+		if err != nil {
+			return nativeNameStatus(repoPath, oldHash, newHash)
+		}
+		oldTree, err = oldCommit.Tree()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var changes object.Changes
+	if oldTree == nil {
+		changes, err = object.DiffTree(nil, newTree)
+	} else {
+		changes, err = object.DiffTree(oldTree, newTree)
+	}
+	if err != nil {
+		return nativeNameStatus(repoPath, oldHash, newHash)
+	}
+	var out []NameStatusEntry
+	for _, ch := range changes {
+		action, err := ch.Action()
+		if err != nil {
+			continue
+		}
+		from, to, err := ch.Files()
+		if err != nil {
+			// deleted/added may error on one side
+			from, to = nil, nil
+		}
+		switch action {
+		case merkletrie.Insert:
+			name := ch.To.Name
+			if to != nil {
+				name = to.Name
+			}
+			out = append(out, NameStatusEntry{Status: "A", Path: name})
+		case merkletrie.Delete:
+			name := ch.From.Name
+			if from != nil {
+				name = from.Name
+			}
+			out = append(out, NameStatusEntry{Status: "D", Path: name})
+		case merkletrie.Modify:
+			name := ch.To.Name
+			if to != nil {
+				name = to.Name
+			}
+			out = append(out, NameStatusEntry{Status: "M", Path: name})
+		}
+	}
+	return out, nil
+}
+
+// NameStatusEntry is one changed path between commits.
+type NameStatusEntry struct {
+	Status  string
+	Path    string
+	OldPath string
+}
+
+func nativeNameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, error) {
+	args := []string{"-C", repoPath, "diff", "--name-status"}
+	if oldHash != "" {
+		args = append(args, oldHash, newHash)
+	} else {
+		args = append(args, newHash)
+	}
+	cmd := exec.Command("git", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var entries []NameStatusEntry
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		st := fields[0]
+		if len(st) > 0 && (st[0] == 'R' || st[0] == 'C') && len(fields) >= 3 {
+			entries = append(entries, NameStatusEntry{Status: string(st[0]), OldPath: fields[1], Path: fields[2]})
+			continue
+		}
+		entries = append(entries, NameStatusEntry{Status: string(st[0]), Path: fields[1]})
+	}
+	return entries, nil
+}
+
 func HeadHash(repoPath string) (string, error) {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {

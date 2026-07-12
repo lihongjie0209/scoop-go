@@ -2,14 +2,23 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/scoopinstaller/scoop-go/pkg/app"
+	"github.com/scoopinstaller/scoop-go/pkg/dependency"
 	"github.com/scoopinstaller/scoop-go/pkg/install"
+	"github.com/scoopinstaller/scoop-go/pkg/manifest"
 	"github.com/spf13/cobra"
 )
+
+// confirmManifest is overridable in tests. Production prompts on stdin/stdout.
+var confirmManifest = func(m *manifest.Manifest, appName string) (bool, error) {
+	return install.ConfirmManifestInstall(m, appName, os.Stdin, os.Stdout)
+}
 
 var installFlags struct {
 	global      bool
@@ -17,6 +26,60 @@ var installFlags struct {
 	noCache     bool
 	skipHash    bool
 	arch        string
+}
+
+// installTarget is one app to install after dependency expansion.
+type installTarget struct {
+	ref      string
+	version  string
+	explicit bool
+}
+
+// expandInstallTargets expands CLI args into install order.
+// When independent is true, only the requested apps are returned.
+// resolve is injected for tests; production passes dependency.Resolve.
+func expandInstallTargets(args []string, independent bool, arch string, resolve func(string, string) ([]string, error)) ([]installTarget, error) {
+	var targets []installTarget
+	seen := make(map[string]bool)
+
+	addTarget := func(ref, version string, explicit bool) {
+		name := dependency.AppName(ref)
+		key := name
+		if version != "" {
+			key = name + "@" + version
+		}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		targets = append(targets, installTarget{ref: ref, version: version, explicit: explicit})
+	}
+
+	for _, rawApp := range args {
+		appName, bucketName, version := parseAppRef(rawApp)
+		ref := appName
+		if bucketName != "" {
+			ref = bucketName + "/" + appName
+		}
+
+		if independent {
+			addTarget(ref, version, true)
+			continue
+		}
+
+		resolved, err := resolve(ref, arch)
+		if err != nil {
+			return nil, fmt.Errorf("resolving dependencies for '%s': %w", rawApp, err)
+		}
+		for _, dep := range resolved {
+			if dependency.AppName(dep) == appName {
+				addTarget(dep, version, true)
+			} else {
+				addTarget(dep, "", false)
+			}
+		}
+	}
+	return targets, nil
 }
 
 var installCmd = &cobra.Command{
@@ -37,16 +100,35 @@ Examples:
 		checkHash := !installFlags.skipHash
 
 		if global {
-			app.LogInfo("Global installation requested")
+			if err := checkAdminRights(); err != nil {
+				return fmt.Errorf("you need admin rights to install global apps")
+			}
 		}
 
-		// Check for failed installations first
-		install.EnsureNoneFailed(args)
+		targets, err := expandInstallTargets(args, installFlags.independent, arch, dependency.Resolve)
+		if err != nil {
+			return err
+		}
 
-		for _, rawApp := range args {
-			appName, bucketName, version := parseAppRef(rawApp)
+		checkNames := make([]string, 0, len(targets))
+		for _, t := range targets {
+			checkNames = append(checkNames, dependency.AppName(t.ref))
+		}
+		install.EnsureNoneFailed(checkNames)
 
-			// Find manifest
+		for _, target := range targets {
+			appName, bucketName, _ := parseAppRef(target.ref)
+			version := target.version
+
+			if version == "" && dependency.IsInstalled(appName) {
+				if target.explicit {
+					cur := currentInstalledVersion(appName, global)
+					app.LogWarn("'%s' (%s) is already installed.\nUse 'scoop update %s%s' to install a new version.",
+						appName, cur, appName, globalFlagSuffix(global))
+				}
+				continue
+			}
+
 			m, foundBucket, err := install.FindManifest(appName)
 			if err != nil {
 				return err
@@ -55,7 +137,6 @@ Examples:
 				foundBucket = bucketName
 			}
 
-			// Resolve version
 			versionToInstall := m.Version
 			if version != "" && version != m.Version {
 				m, err = install.GenerateVersionManifest(context.Background(), appName, m, version, arch, useCache)
@@ -65,19 +146,25 @@ Examples:
 				versionToInstall = version
 			}
 
-			// Check if already installed
-			for _, g := range []bool{false, true} {
-				currentDir := app.AppCurrentDir(appName, g)
-				if _, statErr := os.Stat(currentDir); statErr == nil && version == "" {
-					if g == global {
-						return &install.AlreadyInstalledError{
-							App: appName, Version: versionToInstall,
-						}
-					}
+			if version != "" {
+				if cur := currentInstalledVersion(appName, global); cur == versionToInstall {
+					app.LogWarn("'%s' (%s) is already installed.", appName, cur)
+					continue
 				}
 			}
 
-			// Install
+			// show_manifest config: display manifest and ask to continue
+			if cfg := app.Config(); cfg != nil && install.ShouldShowManifest(cfg.Config().ShowManifest) {
+				ok, err := confirmManifest(m, appName)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					app.LogInfo("Installation of '%s' cancelled.", appName)
+					continue
+				}
+			}
+
 			engine := &install.Engine{
 				AppName:     appName,
 				Manifest:    m,
@@ -98,7 +185,6 @@ Examples:
 				return fmt.Errorf("installing '%s': %w", appName, err)
 			}
 
-			// Show suggestions
 			if m.Suggest != nil {
 				install.ShowSuggestions(m.Suggest)
 			}
@@ -106,6 +192,30 @@ Examples:
 
 		return nil
 	},
+}
+
+func currentInstalledVersion(appName string, global bool) string {
+	for _, g := range []bool{global, !global} {
+		p := filepath.Join(app.AppCurrentDir(appName, g), "manifest.json")
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var m struct {
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(data, &m) == nil && m.Version != "" {
+			return m.Version
+		}
+	}
+	return "unknown"
+}
+
+func globalFlagSuffix(global bool) string {
+	if global {
+		return " --global"
+	}
+	return ""
 }
 
 // parseAppRef parses "bucket/app@version" format.

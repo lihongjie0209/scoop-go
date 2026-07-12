@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,9 +103,10 @@ var listCmd = &cobra.Command{
 		if found == 0 {
 			if query != "" {
 				app.LogInfo("No apps match '%s'", query)
-			} else {
-				app.LogInfo("No installed apps found.")
+				return nil
 			}
+			// Match PowerShell: empty install list exits non-zero
+			return fmt.Errorf("there aren't any apps installed")
 		}
 
 		return nil

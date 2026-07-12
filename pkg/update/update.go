@@ -16,10 +16,12 @@ import (
 	"github.com/scoopinstaller/scoop-go/pkg/app"
 	"github.com/scoopinstaller/scoop-go/pkg/bucket"
 	"github.com/scoopinstaller/scoop-go/pkg/db"
+	"github.com/scoopinstaller/scoop-go/pkg/dependency"
 	"github.com/scoopinstaller/scoop-go/pkg/env"
 	"github.com/scoopinstaller/scoop-go/pkg/gitutil"
 	"github.com/scoopinstaller/scoop-go/pkg/install"
 	"github.com/scoopinstaller/scoop-go/pkg/manifest"
+	"github.com/scoopinstaller/scoop-go/pkg/proc"
 	"github.com/scoopinstaller/scoop-go/pkg/shim"
 	"github.com/scoopinstaller/scoop-go/pkg/shortcut"
 	"github.com/scoopinstaller/scoop-go/pkg/version"
@@ -49,9 +51,9 @@ func SyncScoop(currentVersion string) error {
 	return nil
 }
 
-// SyncBuckets updates all local buckets via git pull, then rebuilds the
-// SQLite search cache if enabled (DB-02). Also displays per-bucket commit
-// logs when show_update_log is enabled.
+// SyncBuckets updates all local buckets via git pull, then incrementally
+// updates the SQLite search cache when possible (full rebuild as fallback).
+// Also displays per-bucket commit logs when show_update_log is enabled.
 func SyncBuckets() error {
 	app.LogInfo("Updating Buckets...")
 	buckets := bucket.ListLocal()
@@ -60,10 +62,13 @@ func SyncBuckets() error {
 	showUpdateLog := cfg.Config().ShowUpdateLog
 	showLog := showUpdateLog != nil && *showUpdateLog
 
+	var changeSet db.ChangeSet
+	needFullRebuild := false
+
 	for _, b := range buckets {
 		bucketDir := bucket.Dir(b.Name)
 		var prevHash string
-		if showLog && gitutil.IsRepo(bucketDir) {
+		if gitutil.IsRepo(bucketDir) {
 			prevHash, _ = gitutil.HeadHash(bucketDir)
 		}
 
@@ -73,20 +78,54 @@ func SyncBuckets() error {
 			app.LogDebug("Updated '%s' bucket", b.Name)
 		}
 
-		// Show per-bucket update log if enabled
-		if showLog && gitutil.IsRepo(bucketDir) {
-			newHash, _ := gitutil.HeadHash(bucketDir)
-			if prevHash != "" && newHash != "" && prevHash != newHash {
-				app.LogInfo("Changes in '%s' bucket:", b.Name)
-				displayCommitLog(bucketDir, prevHash, newHash)
-			}
+		newHash, _ := gitutil.HeadHash(bucketDir)
+		if showLog && prevHash != "" && newHash != "" && prevHash != newHash {
+			app.LogInfo("Changes in '%s' bucket:", b.Name)
+			displayCommitLog(bucketDir, prevHash, newHash)
 		}
+
+		if !db.IsEnabled() {
+			continue
+		}
+		if prevHash == "" || newHash == "" {
+			needFullRebuild = true
+			continue
+		}
+		if prevHash == newHash {
+			continue
+		}
+		entries, err := gitutil.NameStatus(bucketDir, prevHash, newHash)
+		if err != nil {
+			app.LogDebug("name-status for '%s' failed: %v; will full rebuild", b.Name, err)
+			needFullRebuild = true
+			continue
+		}
+		var ns []db.NameStatusChange
+		for _, e := range entries {
+			ns = append(ns, db.NameStatusChange{Status: e.Status, Path: e.Path, OldPath: e.OldPath})
+		}
+		cs := db.ChangeSetFromNameStatus(bucketDir, b.Name, ns)
+		changeSet.UpsertPaths = append(changeSet.UpsertPaths, cs.UpsertPaths...)
+		changeSet.Removals = append(changeSet.Removals, cs.Removals...)
 	}
 
-	// Rebuild search cache after bucket sync (DB-02)
 	if db.IsEnabled() {
-		if err := db.RebuildAll(); err != nil {
-			app.LogWarn("Failed to rebuild search cache: %v", err)
+		switch {
+		case needFullRebuild:
+			if err := db.RebuildAll(); err != nil {
+				app.LogWarn("Failed to rebuild search cache: %v", err)
+			}
+		case len(changeSet.UpsertPaths) > 0 || len(changeSet.Removals) > 0:
+			app.LogInfo("Updating search cache (%d changed, %d removed)...",
+				len(changeSet.UpsertPaths), len(changeSet.Removals))
+			if err := db.ApplyChanges(changeSet); err != nil {
+				app.LogWarn("Incremental cache update failed: %v; falling back to full rebuild", err)
+				if err := db.RebuildAll(); err != nil {
+					app.LogWarn("Failed to rebuild search cache: %v", err)
+				}
+			}
+		default:
+			app.LogDebug("Search cache unchanged")
 		}
 	}
 
@@ -96,7 +135,8 @@ func SyncBuckets() error {
 // UpdateApp updates a single app to the latest version.
 // It handles old version cleanup, running process checks, nightly versions,
 // architecture detection, and delegates the actual install to install.Engine.
-func UpdateApp(ctx context.Context, appName string, global, force, quiet bool, useCache, checkHash bool) error {
+// When independent is false, missing dependencies of the new manifest are installed first.
+func UpdateApp(ctx context.Context, appName string, global, force, quiet, independent, useCache, checkHash bool) error {
 	appDir := app.AppDir(global)
 	currentPath := filepath.Join(appDir, appName, "current")
 
@@ -118,10 +158,21 @@ func UpdateApp(ctx context.Context, appName string, global, force, quiet bool, u
 		}
 	}
 
+	// Skip held apps unless forced
+	if installInfo.Hold && !force {
+		if !quiet {
+			app.LogWarn("Skipping '%s': app is on hold", appName)
+		}
+		return nil
+	}
+
 	// --- Find new manifest ---
-	newManifest, _, err := install.FindManifest(appName)
+	newManifest, foundBucket, err := install.FindManifest(appName)
 	if err != nil {
 		return fmt.Errorf("couldn't find manifest for '%s': %w", appName, err)
+	}
+	if installBucket == "" {
+		installBucket = foundBucket
 	}
 
 	newVersion := newManifest.Version
@@ -148,6 +199,48 @@ func UpdateApp(ctx context.Context, appName string, global, force, quiet bool, u
 		}
 	}
 
+	// Install missing dependencies before tearing down the current app
+	if !independent {
+		ref := appName
+		if installBucket != "" {
+			ref = installBucket + "/" + appName
+		}
+		resolved, err := dependency.Resolve(ref, arch)
+		if err != nil {
+			return fmt.Errorf("resolving dependencies for '%s': %w", appName, err)
+		}
+		for _, dep := range dependency.Missing(resolved, appName, false) {
+			depName := dependency.AppName(dep)
+			depBucket := ""
+			if i := strings.Index(dep, "/"); i >= 0 && !strings.Contains(dep, "://") {
+				depBucket = dep[:i]
+			}
+			m, fb, err := install.FindManifest(depName)
+			if err != nil {
+				return fmt.Errorf("dependency '%s': %w", depName, err)
+			}
+			if depBucket == "" {
+				depBucket = fb
+			}
+			engine := &install.Engine{
+				AppName:   depName,
+				Manifest:  m,
+				Bucket:    depBucket,
+				Version:   m.Version,
+				Arch:      arch,
+				Global:    global,
+				UseCache:  useCache,
+				CheckHash: checkHash,
+			}
+			if err := engine.Install(ctx); err != nil {
+				if _, ok := err.(*install.AlreadyInstalledError); ok {
+					continue
+				}
+				return fmt.Errorf("installing dependency '%s': %w", depName, err)
+			}
+		}
+	}
+
 	// --- Check for running processes ---
 	if !checkRunningProcesses(appDir, appName) {
 		return fmt.Errorf("skipping update for '%s': application is running", appName)
@@ -171,6 +264,15 @@ func UpdateApp(ctx context.Context, appName string, global, force, quiet bool, u
 	if resolvedArch == "" {
 		return fmt.Errorf("'%s' doesn't support architecture %s", appName, arch)
 	}
+
+	// Prefetch new version into cache while old app is still intact.
+	// Matches PowerShell scoop-update.ps1 "Download new version" region.
+	app.LogInfo("Downloading new version")
+	if err := PrefetchApp(ctx, appName, newManifest, resolvedArch, useCache, checkHash); err != nil {
+		return fmt.Errorf("downloading new version of '%s': %w", appName, err)
+	}
+	// Hashes already verified during prefetch; install can skip re-check for speed
+	// but we keep checkHash so install still validates if cache was corrupted.
 
 	// --- Old version cleanup (before installing new) ---
 	rollbackCurrent := ""
@@ -329,26 +431,12 @@ func checkRunningProcesses(appDir, appName string) bool {
 	}
 
 	appPath := filepath.Join(appDir, appName)
-
-	// Use PowerShell to check for running processes from this app directory
-	psCmd := fmt.Sprintf(
-		`Get-Process | Where-Object { $_.Path -like '%s*' } | Measure-Object | Select-Object -ExpandProperty Count`,
-		strings.ReplaceAll(appPath, "'", "''"),
-	)
-
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", psCmd)
-	output, err := cmd.Output()
-	if err != nil {
-		// If we can't check, assume it's safe to proceed
-		return true
-	}
-
-	count := strings.TrimSpace(string(output))
-	if count != "0" && count != "" {
-		app.LogWarn("'%s' is running. Close it before updating, or set 'ignore_running_processes' to true in config.", appName)
+	running, names := proc.AnyRunningUnderPath(appPath, nil)
+	if running {
+		app.LogWarn("'%s' is running (%s). Close it before updating, or set 'ignore_running_processes' to true in config.",
+			appName, strings.Join(names, ", "))
 		return false
 	}
-
 	return true
 }
 

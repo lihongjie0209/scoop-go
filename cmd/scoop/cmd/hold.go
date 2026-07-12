@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/scoopinstaller/scoop-go/pkg/app"
 	"github.com/spf13/cobra"
@@ -15,42 +16,62 @@ var holdFlags struct {
 }
 
 var holdCmd = &cobra.Command{
-	Use:   "hold <app>",
+	Use:   "hold <app> [app...]",
 	Short: "Hold an app to disable updates",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return setHold(args[0], true, holdFlags.global)
+		var firstErr error
+		for _, name := range args {
+			if err := setHold(name, true, holdFlags.global); err != nil {
+				app.LogError("%v", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+		return firstErr
 	},
 }
 
 var unholdCmd = &cobra.Command{
-	Use:   "unhold <app>",
+	Use:   "unhold <app> [app...]",
 	Short: "Unhold an app to enable updates",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return setHold(args[0], false, holdFlags.global)
+		var firstErr error
+		for _, name := range args {
+			if err := setHold(name, false, holdFlags.global); err != nil {
+				app.LogError("%v", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+		return firstErr
 	},
 }
 
 func setHold(appName string, hold, global bool) error {
-	// Special case: 'scoop' app uses the hold_update_until config key
+	// Special case: 'scoop' app uses the hold_update_until config key.
+	// PowerShell Scoop holds self-updates for one day.
 	if appName == "scoop" {
 		cfg := app.Config()
 		if hold {
-			cfg.Set("hold_update_until", "2100-01-01")
+			until := time.Now().Add(24 * time.Hour).Format("2006-01-02")
+			cfg.Set("hold_update_until", until)
 		} else {
 			cfg.Set("hold_update_until", "")
 		}
 		cfg.Save()
 		if hold {
-			app.LogSuccess("'scoop' has been held (updates disabled until 2100).")
+			app.LogSuccess("'scoop' has been held (updates disabled until %s).",
+				time.Now().Add(24*time.Hour).Format("2006-01-02"))
 		} else {
 			app.LogSuccess("'scoop' has been unheld (updates enabled).")
 		}
 		return nil
 	}
 
-	// Find the install.json for the app
 	var installPath string
 	scopes := []bool{global}
 	if !global {
@@ -81,7 +102,6 @@ func setHold(appName string, hold, global bool) error {
 		return fmt.Errorf("parsing install info: %w", err)
 	}
 
-	// Check current hold state
 	currentHold, _ := info["hold"].(bool)
 	if currentHold == hold {
 		if hold {
@@ -92,7 +112,6 @@ func setHold(appName string, hold, global bool) error {
 		return nil
 	}
 
-	// Set the hold state
 	info["hold"] = hold
 	newData, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {

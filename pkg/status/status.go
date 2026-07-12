@@ -161,6 +161,15 @@ func checkSingleAppStatus(appName string, global bool) AppStatus {
 	s.Hold = installInfo.Hold
 	bucketName := installInfo.Bucket
 
+	// When "current" is a real directory (not a junction), resolve version from manifest.
+	if s.Version == "current" {
+		if data, err := os.ReadFile(filepath.Join(versionDir, "manifest.json")); err == nil {
+			if m, err := manifest.Parse(data); err == nil && m.Version != "" {
+				s.Version = m.Version
+			}
+		}
+	}
+
 	// Check deprecated
 	deprecatedPath := filepath.Join(bucket.Dir(bucketName), "deprecated", appName+".json")
 	if _, err := os.Stat(deprecatedPath); err == nil {
@@ -197,10 +206,9 @@ func checkSingleAppStatus(appName string, global bool) AppStatus {
 			}
 		}
 
-		// Check missing deps
+		// Check missing deps (bucket/app -> app name)
 		for _, dep := range m.Depends {
-			depApp := strings.Split(dep, "/")[0]
-			depApp = strings.TrimSuffix(depApp, ".json")
+			depApp := depAppName(dep)
 			if !isAppInstalled(depApp) {
 				s.MissingDeps = append(s.MissingDeps, dep)
 			}
@@ -280,4 +288,14 @@ func readInstallInfo(versionDir string) InstallInfo {
 	}
 	json.Unmarshal(data, &info)
 	return info
+}
+
+// depAppName extracts the app name from "bucket/app" or a plain name.
+func depAppName(dep string) string {
+	dep = strings.TrimSpace(dep)
+	dep = strings.TrimSuffix(dep, ".json")
+	if i := strings.LastIndex(dep, "/"); i >= 0 {
+		return dep[i+1:]
+	}
+	return dep
 }

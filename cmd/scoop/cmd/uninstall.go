@@ -11,6 +11,7 @@ import (
 	"github.com/scoopinstaller/scoop-go/pkg/app"
 	"github.com/scoopinstaller/scoop-go/pkg/env"
 	"github.com/scoopinstaller/scoop-go/pkg/manifest"
+	"github.com/scoopinstaller/scoop-go/pkg/proc"
 	"github.com/scoopinstaller/scoop-go/pkg/shim"
 	"github.com/spf13/cobra"
 )
@@ -22,116 +23,116 @@ var uninstallFlags struct {
 }
 
 var uninstallCmd = &cobra.Command{
-	Use:   "uninstall <app>",
+	Use:   "uninstall <app> [app...]",
 	Short: "Uninstall an app",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		appName := args[0]
-		if appName == "scoop" {
-			return fmt.Errorf("use the uninstall script to remove scoop itself")
+		if uninstallFlags.global {
+			if err := checkAdminRights(); err != nil {
+				return fmt.Errorf("you need admin rights to uninstall global apps")
+			}
 		}
-
-		global := uninstallFlags.global
-		appPath := filepath.Join(app.AppDir(global), appName)
-		if _, err := os.Stat(appPath); os.IsNotExist(err) {
-			if !global {
-				globalPath := filepath.Join(app.Dirs().GlobalDir, "apps", appName)
-				if _, err := os.Stat(globalPath); err == nil {
-					return fmt.Errorf("'%s' is installed globally, use --global flag", appName)
+		var firstErr error
+		for _, appName := range args {
+			if err := uninstallOne(appName); err != nil {
+				app.LogError("%v", err)
+				if firstErr == nil {
+					firstErr = err
 				}
 			}
-			return fmt.Errorf("'%s' isn't installed", appName)
 		}
-
-		// Find current version
-		versionDir, m, installInfo := findInstallInfo(appName, global)
-		if versionDir == "" {
-			return fmt.Errorf("no installed version found for '%s'", appName)
-		}
-
-		version := filepath.Base(versionDir)
-		app.LogInfo("Uninstalling '%s' (%s).", appName, version)
-
-		// Step 0: Check for running processes
-		if !uninstallFlags.force && m != nil {
-			if err := checkRunningProcessesForUninstall(appName, m, installInfo.Architecture); err != nil {
-				return err
-			}
-		}
-
-		// Step 1: Run pre_uninstall hooks
-		if m != nil {
-			for _, hook := range m.GetPreUninstall(installInfo.Architecture) {
-				runHook(hook, versionDir)
-			}
-		}
-
-		// Step 2: Run uninstaller (if configured)
-		if m != nil {
-			runAppUninstaller(m, versionDir, installInfo.Architecture)
-		}
-
-		// Step 3: Remove shims
-		if m != nil {
-			shimDir := app.ShimDir(global)
-			bins := manifest.BinEntries(m.GetBin(installInfo.Architecture))
-			for _, bin := range bins {
-				app.LogDebug("Removing shim: %s", bin[1])
-				shim.Remove(bin[1], shimDir, appName)
-			}
-		}
-
-		// Step 4: Remove shortcuts
-		removeAppShortcuts(appName, m, installInfo.Architecture, global)
-
-		// Step 5: Remove PS module
-		removePSModule(m, global)
-
-		// Step 6: Remove PATH entries
-		if m != nil {
-			removeEnvPaths(m, versionDir, installInfo.Architecture, global)
-		}
-
-		// Step 7: Remove env_set variables
-		if m != nil {
-			removeEnvSet(m, installInfo.Architecture, global)
-		}
-
-		// Step 8: Run post_uninstall hooks
-		if m != nil {
-			for _, hook := range m.GetPostUninstall(installInfo.Architecture) {
-				runHook(hook, versionDir)
-			}
-		}
-
-		// Step 9: Remove version directories
-		entries, _ := os.ReadDir(appPath)
-		for _, e := range entries {
-			if e.Name() == "current" {
-				os.RemoveAll(filepath.Join(appPath, e.Name()))
-			} else if !strings.HasPrefix(e.Name(), "_") {
-				os.RemoveAll(filepath.Join(appPath, e.Name()))
-			}
-		}
-
-		// Remove app directory if empty
-		remaining, _ := os.ReadDir(appPath)
-		if len(remaining) == 0 {
-			os.Remove(appPath)
-		}
-
-		// Step 10: Purge persistent data
-		if uninstallFlags.purge {
-			persistDir := app.PersistDir(appName, global)
-			if _, err := os.Stat(persistDir); err == nil {
-				app.LogInfo("Removing persisted data.")
-				os.RemoveAll(persistDir)
-			}
-		}
-
-		app.LogSuccess("'%s' was uninstalled.", appName)
-		return nil
+		return firstErr
 	},
+}
+
+func uninstallOne(appName string) error {
+	if appName == "scoop" {
+		return fmt.Errorf("use the uninstall script to remove scoop itself")
+	}
+
+	global := uninstallFlags.global
+	appPath := filepath.Join(app.AppDir(global), appName)
+	if _, err := os.Stat(appPath); os.IsNotExist(err) {
+		if !global {
+			globalPath := filepath.Join(app.Dirs().GlobalDir, "apps", appName)
+			if _, err := os.Stat(globalPath); err == nil {
+				return fmt.Errorf("'%s' is installed globally, use --global flag", appName)
+			}
+		}
+		return fmt.Errorf("'%s' isn't installed", appName)
+	}
+
+	versionDir, m, installInfo := findInstallInfo(appName, global)
+	if versionDir == "" {
+		return fmt.Errorf("no installed version found for '%s'", appName)
+	}
+
+	version := filepath.Base(versionDir)
+	app.LogInfo("Uninstalling '%s' (%s).", appName, version)
+
+	if !uninstallFlags.force && m != nil {
+		if err := checkRunningProcessesForUninstall(appName, m, installInfo.Architecture); err != nil {
+			return err
+		}
+	}
+
+	if m != nil {
+		for _, hook := range m.GetPreUninstall(installInfo.Architecture) {
+			runHook(hook, versionDir)
+		}
+	}
+
+	if m != nil {
+		runAppUninstaller(m, versionDir, installInfo.Architecture)
+	}
+
+	if m != nil {
+		shimDir := app.ShimDir(global)
+		bins := manifest.BinEntries(m.GetBin(installInfo.Architecture))
+		for _, bin := range bins {
+			app.LogDebug("Removing shim: %s", bin[1])
+			shim.Remove(bin[1], shimDir, appName)
+		}
+	}
+
+	removeAppShortcuts(appName, m, installInfo.Architecture, global)
+	removePSModule(m, global)
+
+	if m != nil {
+		removeEnvPaths(m, versionDir, installInfo.Architecture, global)
+		removeEnvSet(m, installInfo.Architecture, global)
+	}
+
+	if m != nil {
+		for _, hook := range m.GetPostUninstall(installInfo.Architecture) {
+			runHook(hook, versionDir)
+		}
+	}
+
+	entries, _ := os.ReadDir(appPath)
+	for _, e := range entries {
+		if e.Name() == "current" {
+			os.RemoveAll(filepath.Join(appPath, e.Name()))
+		} else if !strings.HasPrefix(e.Name(), "_") {
+			os.RemoveAll(filepath.Join(appPath, e.Name()))
+		}
+	}
+
+	remaining, _ := os.ReadDir(appPath)
+	if len(remaining) == 0 {
+		os.Remove(appPath)
+	}
+
+	if uninstallFlags.purge {
+		persistDir := app.PersistDir(appName, global)
+		if _, err := os.Stat(persistDir); err == nil {
+			app.LogInfo("Removing persisted data.")
+			os.RemoveAll(persistDir)
+		}
+	}
+
+	app.LogSuccess("'%s' was uninstalled.", appName)
+	return nil
 }
 
 // checkRunningProcessesForUninstall checks if any of the app's binaries are currently running.
@@ -145,19 +146,21 @@ func checkRunningProcessesForUninstall(appName string, m *manifest.Manifest, arc
 		return nil
 	}
 
-	bins := manifest.BinEntries(m.GetBin(arch))
-	for _, bin := range bins {
-		name := bin[1]
-		cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("IMAGENAME eq %s.exe", name), "/NH")
-		output, err := cmd.Output()
-		if err != nil {
-			continue
-		}
-		if strings.Contains(string(output), name+".exe") {
-			return fmt.Errorf("'%s' is currently running. Close it first or use --force", name)
-		}
+	// Prefer path-based detection under the app directory (more accurate than image name).
+	appPath := filepath.Join(app.AppDir(uninstallFlags.global), appName)
+	if running, names := proc.AnyRunningUnderPath(appPath, nil); running {
+		return fmt.Errorf("'%s' is currently running (%s). Close it first or use --force", appName, strings.Join(names, ", "))
 	}
 
+	// Fallback: image-name check for bins (covers processes started outside app dir)
+	bins := manifest.BinEntries(m.GetBin(arch))
+	var images []string
+	for _, bin := range bins {
+		images = append(images, bin[1])
+	}
+	if proc.AnyRunningByImageName(images, nil) {
+		return fmt.Errorf("'%s' is currently running. Close it first or use --force", appName)
+	}
 	return nil
 }
 

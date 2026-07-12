@@ -409,6 +409,11 @@ func RemoveByBucketAndName(bucketName, name string) error {
 		return err
 	}
 
+	// Remove FTS rows first while we still know app rowids
+	_, _ = db.Exec(`DELETE FROM app_fts WHERE rowid IN (
+		SELECT rowid FROM app WHERE bucket = ? AND name = ?
+	)`, bucketName, name)
+
 	_, err = db.Exec("DELETE FROM app WHERE bucket = ? AND name = ?", bucketName, name)
 	return err
 }

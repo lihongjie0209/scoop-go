@@ -51,6 +51,12 @@ You can use '*' or '--all' in place of <app> to update all apps.`,
 		}
 
 		// Update specific apps
+		if updateFlags.global {
+			if err := checkAdminRights(); err != nil {
+				return fmt.Errorf("you need admin rights to update global apps")
+			}
+		}
+
 		if updateFlags.all || (len(args) == 1 && args[0] == "*") {
 			return updateAllApps()
 		}
@@ -65,7 +71,7 @@ You can use '*' or '--all' in place of <app> to update all apps.`,
 			}
 
 			if err := update.UpdateApp(context.Background(), appName,
-				updateFlags.global, updateFlags.force, updateFlags.quiet,
+				updateFlags.global, updateFlags.force, updateFlags.quiet, updateFlags.independent,
 				!updateFlags.noCache, !updateFlags.skipHash); err != nil {
 				app.LogError("Updating '%s': %v", appName, err)
 			}
@@ -107,7 +113,7 @@ func updateAllApps() error {
 		app.LogInfo("Updating '%s' (%s -> %s)...", s.Name, s.Version, s.LatestVersion)
 
 		if err := update.UpdateApp(context.Background(), s.Name,
-			s.Global, false, false,
+			s.Global, false, false, updateFlags.independent,
 			!updateFlags.noCache, !updateFlags.skipHash); err != nil {
 			app.LogError("Failed to update '%s': %v", s.Name, err)
 			failed++

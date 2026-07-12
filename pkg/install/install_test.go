@@ -214,6 +214,54 @@ func TestGenerateVersionManifestDownloadsAndPinsHash(t *testing.T) {
 	}
 }
 
+func TestGenerateVersionManifestUsesRemoteHashWithoutAssetDownload(t *testing.T) {
+	const remoteHash = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	assetHits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/SHA256SUMS"):
+			_, _ = w.Write([]byte(remoteHash + "  tool-1.2.3.zip\n"))
+		case strings.Contains(r.URL.Path, "tool-"):
+			assetHits++
+			http.Error(w, "asset should not be downloaded", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	t.Setenv("SCOOP", root)
+	if err := app.Initialize(filepath.Join(root, "config.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	source := manifest.MustParse([]byte(fmt.Sprintf(`{
+		"version":"2.0.0",
+		"homepage":"https://example.test",
+		"license":"MIT",
+		"url":%q,
+		"autoupdate":{
+			"url":%q,
+			"hash":{"url":%q,"mode":"extract"}
+		}
+	}`, server.URL+"/tool-2.0.0.zip", server.URL+"/tool-$version.zip", server.URL+"/SHA256SUMS")))
+
+	generated, err := GenerateVersionManifest(context.Background(), "tool", source, "1.2.3", "64bit", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assetHits != 0 {
+		t.Fatalf("expected no asset download when remote hash found, hits=%d", assetHits)
+	}
+	if got := generated.GetHash("64bit"); len(got) != 1 || got[0] != remoteHash {
+		t.Fatalf("hash = %#v, want %s", got, remoteHash)
+	}
+	if got := generated.GetURL("64bit"); len(got) != 1 || !strings.Contains(got[0], "tool-1.2.3.zip") {
+		t.Fatalf("url = %#v", got)
+	}
+}
+
 func TestPersistDataCreatesLinkForInitiallyMissingDirectory(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SCOOP", root)
