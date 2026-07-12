@@ -183,7 +183,7 @@ func launchReplaceHelper(targetPath, stagedPath string) error {
 	if err != nil {
 		return err
 	}
-	helper := filepath.Join(os.TempDir(), fmt.Sprintf("scoop-go-update-%d.exe", time.Now().UnixNano()))
+	helper := filepath.Join(app.Dirs().ScoopDir, fmt.Sprintf("scoop-go-update-%d.exe", time.Now().UnixNano()))
 	data, err := os.ReadFile(current)
 	if err != nil {
 		return fmt.Errorf("reading updater helper: %w", err)
