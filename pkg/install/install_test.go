@@ -273,7 +273,7 @@ func TestPersistDataCreatesLinkForInitiallyMissingDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &manifest.Manifest{Persist: "data"}
-	if err := PersistData("persist-app", false, m, versionDir); err != nil {
+	if err := PersistData("persist-app", false, m, versionDir, "64bit"); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Stat(filepath.Join(versionDir, "data")); err != nil || !info.IsDir() {

@@ -37,7 +37,21 @@ type InstallInfo struct {
 
 // SyncScoop updates Scoop itself via git.
 // Mirrors Sync-Scoop() from libexec/scoop-update.ps1 L64-L153.
+// Respects HOLD_UPDATE_UNTIL config to defer updates.
 func SyncScoop(currentVersion string) error {
+	cfg := app.Config()
+	if cfg != nil {
+		if holdUntil := cfg.Config().HoldUpdateUntil; holdUntil != "" {
+			// Parse in local timezone so hold expires at local midnight, not UTC midnight.
+			if t, err := time.ParseInLocation("2006-01-02", holdUntil, time.Local); err == nil {
+				if time.Now().Before(t) {
+					app.LogInfo("Scoop update is on hold until %s", holdUntil)
+					return nil
+				}
+			}
+		}
+	}
+
 	app.LogInfo("Checking for Scoop Go updates...")
 	started, err := SelfUpdate(currentVersion)
 	if err != nil {
@@ -88,15 +102,23 @@ func SyncBuckets() error {
 			continue
 		}
 		if prevHash == "" || newHash == "" {
+			// Non-git or hash unavailable: re-clone style sync cannot diff
 			needFullRebuild = true
 			continue
 		}
 		if prevHash == newHash {
 			continue
 		}
+		// Hash changed (including after re-clone). Prefer incremental name-status;
+		// if history is shallow/missing, force full rebuild (do NOT treat as unchanged).
 		entries, err := gitutil.NameStatus(bucketDir, prevHash, newHash)
 		if err != nil {
 			app.LogDebug("name-status for '%s' failed: %v; will full rebuild", b.Name, err)
+			needFullRebuild = true
+			continue
+		}
+		if len(entries) == 0 && prevHash != newHash {
+			// Unexpected empty diff with different hashes — rebuild to be safe
 			needFullRebuild = true
 			continue
 		}
@@ -166,27 +188,21 @@ func UpdateApp(ctx context.Context, appName string, global, force, quiet, indepe
 		return nil
 	}
 
-	// --- Find new manifest ---
-	newManifest, foundBucket, err := install.FindManifest(appName)
+	// --- Find new manifest from bucket (never from installed copy) ---
+	// PS scoop-update: re-read bucket manifest using install.json.bucket
+	newManifest, foundBucket, err := install.FindAvailableManifest(appName, installBucket)
 	if err != nil {
-		return fmt.Errorf("couldn't find manifest for '%s': %w", appName, err)
+		// Fallback: any bucket if install bucket missing/removed
+		newManifest, foundBucket, err = install.FindAvailableManifest(appName, "")
+		if err != nil {
+			return fmt.Errorf("couldn't find manifest for '%s': %w", appName, err)
+		}
 	}
 	if installBucket == "" {
 		installBucket = foundBucket
 	}
 
 	newVersion := newManifest.Version
-
-	// --- Version comparison ---
-	if !force && currentVersion != "" {
-		cmp := version.Compare(currentVersion, newVersion)
-		if cmp <= 0 {
-			if !quiet {
-				app.LogWarn("The latest version of '%s' (%s) is already installed.", appName, currentVersion)
-			}
-			return nil
-		}
-	}
 
 	// --- Determine architecture from install.json or config ---
 	arch := installInfo.Architecture
@@ -196,6 +212,40 @@ func UpdateApp(ctx context.Context, appName string, global, force, quiet, indepe
 			arch = cfg.Config().DefaultArchitecture
 		} else {
 			arch = "64bit"
+		}
+	}
+
+	// Nightly version handling (before compare/prefetch so cache keys match install)
+	isNightly := currentVersion == "nightly" || strings.HasPrefix(currentVersion, "nightly-") || newVersion == "nightly"
+	if isNightly {
+		if newVersion == "nightly" {
+			newVersion = nightlyVersion()
+			newManifest.Version = newVersion
+		}
+		checkHash = false
+		app.LogWarn("Nightly version: hash verification disabled")
+	}
+
+	// --- Version comparison ---
+	cfg := app.Config()
+	updateNightly := cfg != nil && cfg.Config().UpdateNightly
+	if !force && currentVersion != "" {
+		// Nightly: refresh daily when update_nightly is set
+		if isNightly && updateNightly && currentVersion != newVersion {
+			// proceed
+		} else if isNightly && !force && !updateNightly && strings.HasPrefix(currentVersion, "nightly-") {
+			if !quiet {
+				app.LogWarn("The latest version of '%s' (%s) is already installed.", appName, currentVersion)
+			}
+			return nil
+		} else {
+			cmp := version.Compare(currentVersion, newVersion)
+			if cmp <= 0 {
+				if !quiet {
+					app.LogWarn("The latest version of '%s' (%s) is already installed.", appName, currentVersion)
+				}
+				return nil
+			}
 		}
 	}
 
@@ -215,7 +265,7 @@ func UpdateApp(ctx context.Context, appName string, global, force, quiet, indepe
 			if i := strings.Index(dep, "/"); i >= 0 && !strings.Contains(dep, "://") {
 				depBucket = dep[:i]
 			}
-			m, fb, err := install.FindManifest(depName)
+			m, fb, err := install.FindAvailableManifest(depName, depBucket)
 			if err != nil {
 				return fmt.Errorf("dependency '%s': %w", depName, err)
 			}
@@ -246,16 +296,6 @@ func UpdateApp(ctx context.Context, appName string, global, force, quiet, indepe
 		return fmt.Errorf("skipping update for '%s': application is running", appName)
 	}
 
-	// --- Nightly version handling ---
-	isNightly := currentVersion == "nightly" || strings.HasPrefix(currentVersion, "nightly-") || newVersion == "nightly"
-	if isNightly {
-		if newVersion == "nightly" {
-			newVersion = nightlyVersion()
-		}
-		checkHash = false
-		app.LogWarn("Nightly version: hash verification disabled")
-	}
-
 	app.LogInfo("Updating '%s' (%s -> %s)", appName, currentVersion, newVersion)
 
 	// Resolve the new architecture before changing any part of the working
@@ -265,38 +305,44 @@ func UpdateApp(ctx context.Context, appName string, global, force, quiet, indepe
 		return fmt.Errorf("'%s' doesn't support architecture %s", appName, arch)
 	}
 
-	// Prefetch new version into cache while old app is still intact.
-	// Matches PowerShell scoop-update.ps1 "Download new version" region.
+	// Prefetch with final version string (incl. nightly-YYYYMMDD) so cache keys match Install
 	app.LogInfo("Downloading new version")
-	if err := PrefetchApp(ctx, appName, newManifest, resolvedArch, useCache, checkHash); err != nil {
+	prefetchManifest := *newManifest
+	prefetchManifest.Version = newVersion
+	if err := PrefetchApp(ctx, appName, &prefetchManifest, resolvedArch, useCache, checkHash); err != nil {
 		return fmt.Errorf("downloading new version of '%s': %w", appName, err)
 	}
-	// Hashes already verified during prefetch; install can skip re-check for speed
-	// but we keep checkHash so install still validates if cache was corrupted.
 
 	// --- Old version cleanup (before installing new) ---
+	// Mirrors PS: pre_uninstall → uninstaller hooks → remove integrations → post_uninstall
 	rollbackCurrent := ""
+	var oldPathEntries []string
 	if currentManifest != nil && currentVersion != "" {
 		oldVersionDir := app.AppVersionDir(appName, currentVersion, global)
+		// Capture PATH entries before removing current
+		for _, p := range currentManifest.GetEnvAddPath(arch) {
+			oldPathEntries = append(oldPathEntries, filepath.Join(currentPath, p))
+		}
+
 		rollbackCurrent = currentPath + ".scoop-go-rollback"
 		if err := prepareCurrentRollback(currentPath, rollbackCurrent); err != nil {
 			return fmt.Errorf("preparing update rollback for '%s': %w", appName, err)
 		}
 
-		// Run pre_uninstall hooks
 		if err := runHooks(ctx, currentManifest.GetPreUninstall(arch), oldVersionDir); err != nil {
 			app.LogWarn("Pre-uninstall hooks failed for '%s': %v", appName, err)
 		}
 
-		// Remove shims for old version
 		removeShimsForManifest(currentManifest, arch, appName, global)
-
-		// Remove shortcuts for old version
 		removeShortcutsForManifest(currentManifest, arch, global)
-
-		// Remove env_set entries from old version
 		removeEnvSetForManifest(currentManifest, arch, global)
+		if len(oldPathEntries) > 0 {
+			_ = env.RemovePath(oldPathEntries, app.Dirs().PathEnvVar, global)
+		}
 
+		if err := runHooks(ctx, currentManifest.GetPostUninstall(arch), oldVersionDir); err != nil {
+			app.LogWarn("Post-uninstall hooks failed for '%s': %v", appName, err)
+		}
 	}
 
 	// --- Install new version ---
@@ -352,6 +398,16 @@ func restoreFailedUpdate(currentPath, rollbackPath string, m *manifest.Manifest,
 	}
 	if err := os.Rename(rollbackPath, currentPath); err != nil {
 		return fmt.Errorf("restoring current link: %w", err)
+	}
+	// Restore env_add_path entries pointing at restored current
+	if m != nil {
+		var paths []string
+		for _, p := range m.GetEnvAddPath(arch) {
+			paths = append(paths, filepath.Join(currentPath, p))
+		}
+		if len(paths) > 0 {
+			_ = env.AddPath(paths, app.Dirs().PathEnvVar, global)
+		}
 	}
 
 	var restoreErrors []string

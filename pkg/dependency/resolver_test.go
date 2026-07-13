@@ -153,6 +153,15 @@ func TestInstallationHelpersSkipWhenInstalled(t *testing.T) {
 
 func TestInstallationHelpersLessmsiForMSI(t *testing.T) {
 	setupScoop(t)
+	// PS: lessmsi helper only when use_lessmsi is true
+	cfg := app.Config()
+	if cfg == nil {
+		t.Fatal("config not initialized")
+	}
+	if err := cfg.Set("use_lessmsi", true); err != nil {
+		t.Fatal(err)
+	}
+
 	m := &manifest.Manifest{
 		Version:  "1.0.0",
 		Homepage: "https://example.com",
@@ -161,7 +170,34 @@ func TestInstallationHelpersLessmsiForMSI(t *testing.T) {
 	}
 	helpers := getInstallationHelpers(m, "64bit")
 	if !contains(helpers, "lessmsi") {
-		t.Fatalf("expected lessmsi for .msi URL, got %v", helpers)
+		t.Fatalf("expected lessmsi for .msi URL with use_lessmsi, got %v", helpers)
+	}
+
+	// Without use_lessmsi: no lessmsi (native msiexec path)
+	if err := cfg.Set("use_lessmsi", false); err != nil {
+		t.Fatal(err)
+	}
+	helpers = getInstallationHelpers(m, "64bit")
+	if contains(helpers, "lessmsi") {
+		t.Fatalf("lessmsi must not be pulled when use_lessmsi=false, got %v", helpers)
+	}
+
+	// Expand-MsiArchive also gated by use_lessmsi
+	if err := cfg.Set("use_lessmsi", true); err != nil {
+		t.Fatal(err)
+	}
+	m2 := &manifest.Manifest{
+		Version:  "1.0.0",
+		Homepage: "https://example.com",
+		License:  "MIT",
+		URL:      manifest.FlexibleStrings{"https://example.com/pkg.zip"},
+		PreInstall: manifest.FlexibleStrings{
+			"Expand-MsiArchive $dir\\pkg.msi $dir",
+		},
+	}
+	helpers = getInstallationHelpers(m2, "64bit")
+	if !contains(helpers, "lessmsi") {
+		t.Fatalf("expected lessmsi for Expand-MsiArchive with use_lessmsi, got %v", helpers)
 	}
 }
 

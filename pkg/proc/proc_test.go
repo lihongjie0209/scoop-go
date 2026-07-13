@@ -85,6 +85,12 @@ func TestPathPrefixMatch(t *testing.T) {
 	if pathIsUnder(filepath.Join(`C:\scoop\apps\github`, "x.exe"), root) {
 		t.Fatal("sibling prefix must not match")
 	}
+	// Windows path matching is case-insensitive
+	if runtime.GOOS == "windows" {
+		if !pathIsUnder(`C:\Scoop\Apps\Git\current\git.exe`, `c:\scoop\apps\git`) {
+			t.Fatal("case-insensitive child should match on Windows")
+		}
+	}
 }
 
 func TestListProcessPaths_DoesNotPanic(t *testing.T) {

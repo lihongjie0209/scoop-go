@@ -195,20 +195,19 @@ func (d *Downloader) downloadSinglePart(ctx context.Context, url string) (*Resul
 		return nil, fmt.Errorf("creating destination directory: %w", err)
 	}
 
-	// Determine file mode and initial offset (support resume)
-	var fileMode int
+	// partialDest is the in-progress file; on success it is renamed to dest.
+	// When caching is disabled the final dest path is used directly (no rename).
+	partialDest := dest
+	usingPartial := false
 	var initialOffset int64
 
 	if cfg.UseCache && cfg.CacheDir != "" {
-		// Try to resume an interrupted download
-		if existing, err := os.Stat(dest + ".partial"); err == nil {
+		partialDest = dest + ".partial"
+		usingPartial = true
+		// Check for a previous interrupted download to resume.
+		if existing, err := os.Stat(partialDest); err == nil {
 			initialOffset = existing.Size()
-			fileMode = os.O_APPEND | os.O_WRONLY | os.O_CREATE
-		} else {
-			fileMode = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 		}
-	} else {
-		fileMode = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 	}
 
 	// Build request
@@ -251,37 +250,50 @@ func (d *Downloader) downloadSinglePart(ctx context.Context, url string) (*Resul
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// Open file
-	f, err := os.OpenFile(dest, fileMode, 0644)
+	// Open the partial/dest file for writing.
+	// Use O_WRONLY|O_CREATE without O_APPEND so Seek works correctly.
+	var fileMode int
+	if initialOffset > 0 {
+		fileMode = os.O_WRONLY | os.O_CREATE // keep existing bytes; we will seek past them
+	} else {
+		fileMode = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	}
+	f, err := os.OpenFile(partialDest, fileMode, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("creating file: %w", err)
 	}
+	// closed explicitly before rename at the end; this defer handles early error returns.
 	defer f.Close()
 
-	// Seek to initial offset if resuming
+	// Seek to resume offset (only valid without O_APPEND).
 	if initialOffset > 0 {
-		f.Seek(initialOffset, io.SeekStart)
+		if _, err := f.Seek(initialOffset, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("seeking to resume offset: %w", err)
+		}
 	}
 
-	// Setup hash verification
+	// Setup hash verification. When resuming we must hash the already-written
+	// bytes first so the final digest covers the entire file.
 	var hasher hash.Hash
 	hashType := hashTypeFromString(cfg.ExpectedHash)
 	if cfg.ExpectedHash != "" {
 		hasher = newHash(hashType)
+		if initialOffset > 0 {
+			existing, err := os.Open(partialDest)
+			if err != nil {
+				return nil, fmt.Errorf("reading existing partial data for hash: %w", err)
+			}
+			if _, err := io.Copy(hasher, io.LimitReader(existing, initialOffset)); err != nil {
+				existing.Close()
+				return nil, fmt.Errorf("hashing existing partial data: %w", err)
+			}
+			existing.Close()
+		}
 	}
 
 	// Write destination
 	writer := io.Writer(f)
 	if hasher != nil {
-		if initialOffset > 0 {
-			// For resume, we need to hash from the beginning
-			// Read existing file and hash it
-			existingHash := sha256Bytes(dest)
-			// Parse existing hash if available
-			_ = existingHash
-			// Re-create hasher from scratch
-			hasher = newHash(hashType)
-		}
 		writer = io.MultiWriter(f, hasher)
 	}
 
@@ -327,9 +339,24 @@ func (d *Downloader) downloadSinglePart(ctx context.Context, url string) (*Resul
 	if hasher != nil {
 		actualHash := fmt.Sprintf("%x", hasher.Sum(nil))
 		if err := verifyHash(cfg.ExpectedHash, actualHash); err != nil {
-			// Keep partial file for resume
-			os.Rename(dest, dest+".partial")
+			// Close before rename to avoid Windows file-lock issues.
+			f.Close()
+			if usingPartial {
+				// partialDest is already the .partial file — just keep it for resume.
+			} else {
+				os.Rename(dest, dest+".partial")
+			}
 			return nil, err
+		}
+	}
+
+	// Close file before rename (required on Windows).
+	f.Close()
+
+	// If we were writing to a .partial file, move it to the final destination.
+	if usingPartial {
+		if err := os.Rename(partialDest, dest); err != nil {
+			return nil, fmt.Errorf("finalizing download: %w", err)
 		}
 	}
 
@@ -346,6 +373,7 @@ func (d *Downloader) downloadMultiPart(ctx context.Context, url string) (*Result
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HEAD request failed: %d", resp.StatusCode)
 	}

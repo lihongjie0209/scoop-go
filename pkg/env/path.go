@@ -23,7 +23,9 @@ func AddPath(paths []string, envName string, global bool) error {
 		return nil
 	}
 
-	currentPath := os.Getenv(envName)
+	// Read from the scope-specific registry key (not the merged process PATH) to
+	// avoid duplicating system entries into the user key on every install.
+	currentPath := GetEnv(envName, global)
 	changed := false
 
 	var added []string
@@ -61,7 +63,7 @@ func AddPathPrepend(paths []string, envName string, global bool) error {
 		return nil
 	}
 
-	currentPath := os.Getenv(envName)
+	currentPath := GetEnv(envName, global)
 	changed := false
 
 	for _, p := range paths {
@@ -91,7 +93,7 @@ func AddPathPrepend(paths []string, envName string, global bool) error {
 // and returns the list of values that were actually removed.
 // Equivalent to PowerShell Remove-Path -PassThru.
 func RemovePathAndReturn(paths []string, envName string, global bool) ([]string, error) {
-	currentPath := os.Getenv(envName)
+	currentPath := GetEnv(envName, global)
 	if currentPath == "" {
 		return nil, nil
 	}
@@ -137,7 +139,7 @@ func RemovePathAndReturn(paths []string, envName string, global bool) ([]string,
 // Uses the current process environment for reads and writes, then persists to
 // the Windows registry for global effect.
 func RemovePath(paths []string, envName string, global bool) error {
-	currentPath := os.Getenv(envName)
+	currentPath := GetEnv(envName, global)
 	if currentPath == "" {
 		return nil
 	}

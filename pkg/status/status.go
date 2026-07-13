@@ -207,7 +207,7 @@ func checkSingleAppStatus(appName string, global bool) AppStatus {
 		}
 
 		// Check missing deps (bucket/app -> app name)
-		for _, dep := range m.Depends {
+		for _, dep := range m.GetDepends(installInfo.Architecture) {
 			depApp := depAppName(dep)
 			if !isAppInstalled(depApp) {
 				s.MissingDeps = append(s.MissingDeps, dep)

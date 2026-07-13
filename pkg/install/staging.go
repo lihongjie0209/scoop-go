@@ -53,9 +53,24 @@ func PromoteStaging(stageDir, versionDir string) error {
 }
 
 // PromoteStagingForce replaces versionDir with stageDir contents.
+// Uses rename-aside then promote so a failed rename can restore the old dir.
 func PromoteStagingForce(stageDir, versionDir string) error {
-	if err := os.RemoveAll(versionDir); err != nil {
-		return fmt.Errorf("removing existing version dir: %w", err)
+	if _, err := os.Stat(versionDir); os.IsNotExist(err) {
+		return PromoteStaging(stageDir, versionDir)
+	} else if err != nil {
+		return err
 	}
-	return PromoteStaging(stageDir, versionDir)
+	backup := versionDir + ".scoop-old"
+	_ = os.RemoveAll(backup)
+	if err := os.Rename(versionDir, backup); err != nil {
+		return fmt.Errorf("moving existing version dir aside: %w", err)
+	}
+	if err := PromoteStaging(stageDir, versionDir); err != nil {
+		// best-effort restore
+		_ = os.RemoveAll(versionDir)
+		_ = os.Rename(backup, versionDir)
+		return err
+	}
+	_ = os.RemoveAll(backup)
+	return nil
 }

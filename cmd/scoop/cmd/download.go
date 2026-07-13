@@ -40,9 +40,9 @@ var downloadCmd = &cobra.Command{
 }
 
 func downloadOne(raw string) error {
-	appName, _, requestedVersion := parseAppRef(raw)
+	appName, preferredBucket, requestedVersion := parseAppRef(raw)
 
-	m, bucketName, err := install.FindManifest(appName)
+	m, bucketName, err := install.FindAvailableManifest(appName, preferredBucket)
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func downloadOne(raw string) error {
 			CacheDir:     cacheDir,
 			CacheKey:     cacheKey,
 			UseCache:     useCache,
-			Cookies:      m.Cookie,
+			Cookies:      m.GetCookie(supportedArch),
 			ExpectedHash: expectedHash,
 		})
 

@@ -96,10 +96,12 @@ func uninstallOne(appName string) error {
 	}
 
 	removeAppShortcuts(appName, m, installInfo.Architecture, global)
-	removePSModule(m, global)
+	removePSModule(m, installInfo.Architecture, global)
 
 	if m != nil {
-		removeEnvPaths(m, versionDir, installInfo.Architecture, global)
+		// Use the `current` symlink path — that's what was added to PATH at install time.
+		currentDir := filepath.Join(app.AppDir(global), appName, "current")
+		removeEnvPaths(m, currentDir, installInfo.Architecture, global)
 		removeEnvSet(m, installInfo.Architecture, global)
 	}
 
@@ -230,10 +232,52 @@ func extractJSONValue(json, key string) string {
 
 func runAppUninstaller(m *manifest.Manifest, dir, arch string) {
 	u := m.GetUninstaller(arch)
-	if u == nil || u.File == "" {
+	if u == nil {
 		return
 	}
-	app.LogDebug("Running uninstaller: %s", u.File)
+
+	// Run PowerShell script lines if present.
+	if len(u.Script) > 0 {
+		lines := make([]string, len(u.Script))
+		for i, s := range u.Script {
+			lines[i] = strings.ReplaceAll(s, "$dir", dir)
+		}
+		script := strings.Join(lines, "\n")
+		app.LogInfo("Running uninstaller script")
+		cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+		cmd.Dir = dir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			app.LogWarn("Uninstaller script failed: %v", err)
+		}
+		return
+	}
+
+	if u.File == "" {
+		return
+	}
+
+	file := filepath.Join(dir, u.File)
+	if _, err := os.Stat(file); os.IsNotExist(err) {
+		// May be an absolute path or on PATH.
+		file = u.File
+	}
+
+	app.LogInfo("Running uninstaller: %s", u.File)
+
+	var args []string
+	for _, a := range u.Args {
+		args = append(args, strings.ReplaceAll(a, "$dir", dir))
+	}
+
+	cmd := exec.Command(file, args...)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		app.LogWarn("Uninstaller exited with error: %v", err)
+	}
 }
 
 func removeAppShortcuts(appName string, m *manifest.Manifest, arch string, global bool) {
@@ -270,17 +314,21 @@ func shortcutFolder(global bool) string {
 	return filepath.Join(appData, `Microsoft\Windows\Start Menu\Programs\Scoop Apps`)
 }
 
-func removePSModule(m *manifest.Manifest, global bool) {
-	if m == nil || m.PsModule == nil || m.PsModule.Name == "" {
+func removePSModule(m *manifest.Manifest, arch string, global bool) {
+	if m == nil {
+		return
+	}
+	psModule := m.GetPsModule(arch)
+	if psModule == nil || psModule.Name == "" {
 		return
 	}
 	modulesDir := app.Dirs().ModulesDir
 	if global {
 		modulesDir = filepath.Join(app.Dirs().GlobalDir, "modules")
 	}
-	linkPath := filepath.Join(modulesDir, m.PsModule.Name)
+	linkPath := filepath.Join(modulesDir, psModule.Name)
 	if _, err := os.Stat(linkPath); err == nil {
-		app.LogDebug("Removing PS module: %s", m.PsModule.Name)
+		app.LogDebug("Removing PS module: %s", psModule.Name)
 		os.RemoveAll(linkPath)
 	}
 }

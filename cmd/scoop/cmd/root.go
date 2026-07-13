@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -49,6 +50,15 @@ var rootCmd = &cobra.Command{
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		var exitErr *commandExitError
+		if errors.As(err, &exitErr) {
+			if exitErr.message != "" {
+				// Print to stderr directly in case the logger is not initialized.
+				fmt.Fprintf(os.Stderr, "Error: %s\n", exitErr.message)
+				app.LogError("%s", exitErr.message)
+			}
+			os.Exit(exitErr.code)
+		}
 		// Print to stderr directly in case the logger is not initialized
 		// (logger is nil when cobra returns early from Find() error
 		// without calling PersistentPreRunE, e.g. unknown commands).

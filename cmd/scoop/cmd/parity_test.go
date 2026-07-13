@@ -92,7 +92,7 @@ func TestExpandInstallTargetsResolveError(t *testing.T) {
 
 func TestParseAppRef(t *testing.T) {
 	cases := []struct {
-		in              string
+		in               string
 		app, bucket, ver string
 	}{
 		{"git", "git", "", ""},
@@ -101,6 +101,10 @@ func TestParseAppRef(t *testing.T) {
 		{"main/gh@2.7.0", "gh", "main", "2.7.0"},
 		{"app.json", "app", "", ""},
 		{"extras/foo.json@1.0", "foo", "extras", "1.0"},
+		// URLs must not be split on '/'
+		{"https://example.com/bucket/foo.json", "https://example.com/bucket/foo.json", "", ""},
+		{"https://example.com/bucket/foo.json@1.2.3", "https://example.com/bucket/foo.json", "", "1.2.3"},
+		{"http://host/a/b.json@nightly", "http://host/a/b.json", "", "nightly"},
 	}
 	for _, tc := range cases {
 		a, b, v := parseAppRef(tc.in)

@@ -21,6 +21,12 @@ type AppInfo struct {
 	Hold         bool   `json:"hold,omitempty"`
 }
 
+var listFlags struct {
+	outdated bool
+	failed   bool
+	held     bool
+}
+
 var listCmd = &cobra.Command{
 	Use:   "list [query]",
 	Short: "List installed apps",
@@ -57,6 +63,20 @@ var listCmd = &cobra.Command{
 
 				// Get detailed app info
 				version, info, failed := getAppDetails(name, global)
+
+				// Apply filters
+				if listFlags.failed && !failed {
+					continue
+				}
+				if listFlags.held && !info.Hold {
+					continue
+				}
+				if listFlags.outdated {
+					// Check if a newer version exists in the bucket
+					if !isOutdated(name, version, info.Bucket) {
+						continue
+					}
+				}
 
 				// Source column
 				sourceStr := info.Bucket
@@ -101,9 +121,9 @@ var listCmd = &cobra.Command{
 		}
 
 		if found == 0 {
-			if query != "" {
-				app.LogInfo("No apps match '%s'", query)
-				return nil
+			if query != "" || listFlags.failed || listFlags.held || listFlags.outdated {
+				app.LogInfo("No apps match the given criteria")
+				return fmt.Errorf("no apps match the given criteria")
 			}
 			// Match PowerShell: empty install list exits non-zero
 			return fmt.Errorf("there aren't any apps installed")
@@ -171,4 +191,26 @@ func getAppDetails(appName string, global bool) (string, AppInfo, bool) {
 
 func init() {
 	rootCmd.AddCommand(listCmd)
+	listCmd.Flags().BoolVarP(&listFlags.outdated, "outdated", "o", false, "Only list outdated apps")
+	listCmd.Flags().BoolVarP(&listFlags.failed, "failed", "x", false, "Only list apps with failed installs")
+	listCmd.Flags().BoolVarP(&listFlags.held, "held", "H", false, "Only list held apps")
+}
+
+// isOutdated checks whether a newer version is available in the local bucket.
+func isOutdated(appName, installedVersion, bucketName string) bool {
+	if bucketName == "" {
+		return false
+	}
+	manifestPath := filepath.Join(bucket.ManifestDir(bucketName), appName+".json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return false
+	}
+	var m struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return false
+	}
+	return m.Version != installedVersion
 }

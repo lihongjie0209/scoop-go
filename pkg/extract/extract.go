@@ -1,5 +1,5 @@
 // Package extract provides archive extraction with Go-native implementations.
-// Supports: .zip, .tar, .tar.gz, .tar.xz, .tar.bz2, .7z, .gz, .xz, .bz2
+// Supports: .zip, .tar, .tar.gz, .tar.xz, .tar.bz2, .7z, .gz, .xz, .bz2, .zst, .tar.zst
 // External fallbacks via os/exec: .msi (msiexec), InnoSetup (innounp), WiX (dark)
 //
 // Detection uses both file extension AND magic bytes for reliability.
@@ -56,6 +56,10 @@ func DetectExtractor(source string) Extractor {
 		return &XzExtractor{}
 	case strings.HasSuffix(source, ".bz2") && !isTarred(source):
 		return &Bzip2Extractor{}
+	case strings.HasSuffix(source, ".tar.zst") || strings.HasSuffix(source, ".tzst"):
+		return &TarZstdExtractor{}
+	case strings.HasSuffix(source, ".zst"):
+		return &ZstdExtractor{}
 	case strings.HasSuffix(source, ".msi"):
 		return &MsiExtractor{}
 	case strings.HasSuffix(source, ".exe"):
@@ -95,6 +99,8 @@ func DetectByMagic(source string) Extractor {
 		return &TarXzExtractor{} // \xFD7zXZ\x00
 	case magic[0] == 0x42 && magic[1] == 0x5A:
 		return &TarBzip2Extractor{} // BZ
+	case matchMagic(magic, zstdMagic):
+		return detectZstdContent(source) // zstd magic 0x28B52FFD
 	case matchMagic(magic, []byte{0x75, 0x73, 0x74, 0x61, 0x72}):
 		return &TarExtractor{} // ustar (tar)
 	case matchMagic(magic, []byte{0x4D, 0x53, 0x43, 0x46}):
@@ -131,9 +137,11 @@ func isTarred(name string) bool {
 	return strings.HasSuffix(name, ".tar.gz") ||
 		strings.HasSuffix(name, ".tar.xz") ||
 		strings.HasSuffix(name, ".tar.bz2") ||
+		strings.HasSuffix(name, ".tar.zst") ||
 		strings.HasSuffix(name, ".tgz") ||
 		strings.HasSuffix(name, ".txz") ||
-		strings.HasSuffix(name, ".tbz2")
+		strings.HasSuffix(name, ".tbz2") ||
+		strings.HasSuffix(name, ".tzst")
 }
 
 // cleanPath sanitizes a path to prevent path traversal.

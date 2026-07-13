@@ -56,7 +56,12 @@ var cleanupCmd = &cobra.Command{
 		}
 
 		if cleanupFlags.cache {
-			os.RemoveAll(filepath.Join(app.Dirs().CacheDir, "*.download"))
+			pattern := filepath.Join(app.Dirs().CacheDir, "*.download")
+			if matches, err := filepath.Glob(pattern); err == nil {
+				for _, m := range matches {
+					os.Remove(m)
+				}
+			}
 			app.LogSuccess("Cache cleaned.")
 		}
 

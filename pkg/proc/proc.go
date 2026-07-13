@@ -84,13 +84,28 @@ func normalizeImage(name string) string {
 func pathIsUnder(path, root string) bool {
 	path = filepath.Clean(path)
 	root = filepath.Clean(root)
-	rel, err := filepath.Rel(root, path)
+	// Windows paths are case-insensitive
+	if equalFoldPath(path, root) {
+		return true
+	}
+	rel, err := filepath.Rel(normalizePathCase(root), normalizePathCase(path))
 	if err != nil {
 		return false
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return false
 	}
-	// Equal root is not an executable path under app; treat as under.
 	return true
+}
+
+func equalFoldPath(a, b string) bool {
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
+func normalizePathCase(p string) string {
+	// Lowercase for Rel on Windows; on Unix keep as-is (EqualFold still used for root)
+	if filepath.Separator == '\\' {
+		return strings.ToLower(p)
+	}
+	return p
 }

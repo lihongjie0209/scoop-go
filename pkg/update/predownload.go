@@ -49,7 +49,7 @@ func PrefetchApp(ctx context.Context, appName string, m *manifest.Manifest, arch
 			CacheDir:     app.Dirs().CacheDir,
 			CacheKey:     cacheKey,
 			UseCache:     useCache,
-			Cookies:      m.Cookie,
+			Cookies:      m.GetCookie(resolved),
 			ExpectedHash: expectedHash,
 			GithubToken:  githubToken,
 			Proxy:        proxy,

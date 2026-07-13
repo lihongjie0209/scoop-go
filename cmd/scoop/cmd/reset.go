@@ -43,9 +43,15 @@ var resetCmd = &cobra.Command{
 				}
 			}
 		} else {
-			// Determine scope
+			name := args[0]
+			// Auto-detect scope: prefer user scope, fall back to global if
+			// the app is only installed globally (mirrors PS behavior).
 			global := false
-			apps = append(apps, appTuple{args[0], global})
+			if !pathExists(filepath.Join(app.AppDir(false), name)) &&
+				pathExists(filepath.Join(app.AppDir(true), name)) {
+				global = true
+			}
+			apps = append(apps, appTuple{name, global})
 		}
 
 		for _, a := range apps {
@@ -176,7 +182,7 @@ func resetApp(appName string, global bool) error {
 	}
 
 	// Re-create persist data links
-	if err := install.PersistData(appName, global, m, versionDir); err != nil {
+	if err := install.PersistData(appName, global, m, versionDir, arch); err != nil {
 		app.LogWarn("Persisting data: %v", err)
 	}
 

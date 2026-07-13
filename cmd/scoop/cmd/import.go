@@ -115,7 +115,7 @@ var importCmd = &cobra.Command{
 			}
 
 			app.LogInfo("Installing '%s'...", appName)
-			m, foundBucket, err := install.FindManifest(appName)
+			m, foundBucket, err := install.FindAvailableManifest(appName, bucketName)
 			if err != nil {
 				// URL install path
 				if strings.HasPrefix(installRef, "http://") || strings.HasPrefix(installRef, "https://") {
@@ -124,9 +124,6 @@ var importCmd = &cobra.Command{
 					app.LogWarn("Finding manifest for '%s': %v", appName, err)
 				}
 				continue
-			}
-			if bucketName != "" {
-				foundBucket = bucketName
 			}
 
 			versionToInstall := m.Version

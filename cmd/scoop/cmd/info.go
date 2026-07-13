@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/scoopinstaller/scoop-go/pkg/app"
 	"github.com/scoopinstaller/scoop-go/pkg/bucket"
+	"github.com/scoopinstaller/scoop-go/pkg/gitutil"
 	"github.com/scoopinstaller/scoop-go/pkg/install"
 	"github.com/scoopinstaller/scoop-go/pkg/manifest"
+	"github.com/scoopinstaller/scoop-go/pkg/version"
 	"github.com/spf13/cobra"
 )
 
@@ -23,10 +27,11 @@ var infoCmd = &cobra.Command{
 	Long:  `Display information about an installed app or available app manifest.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		appName := args[0]
+		raw := args[0]
+		appName, preferredBucket, _ := parseAppRef(raw)
 
-		// Find manifest
-		m, bucketName, err := install.FindManifest(appName)
+		// Find manifest from preferred bucket when user specified bucket/app
+		m, bucketName, err := install.FindAvailableManifest(appName, preferredBucket)
 		if err != nil {
 			return err
 		}
@@ -45,6 +50,14 @@ var infoCmd = &cobra.Command{
 		} else {
 			fmt.Printf("Source:   local\n")
 		}
+
+		if updatedAt, updatedBy := manifestCommitInfo(bucketName, appName); !updatedAt.IsZero() && updatedBy != "" {
+			fmt.Printf("Updated:  %s  by %s\n", updatedAt.Format("2006-01-02 15:04 MST"), updatedBy)
+		}
+		if installed := installedVersions(appName); len(installed) > 0 {
+			fmt.Printf("Installed: %s\n", strings.Join(installed, ", "))
+		}
+
 		if infoFlags.verbose {
 			if bucketName != "" {
 				if p := filepath.Join(bucket.ManifestDir(bucketName), appName+".json"); pathExists(p) {
@@ -156,8 +169,71 @@ func pathExists(p string) bool {
 	return err == nil
 }
 
+func manifestCommitInfo(bucketName, appName string) (time.Time, string) {
+	if bucketName == "" {
+		return time.Time{}, ""
+	}
+
+	repoDir := bucket.Dir(bucketName)
+	manifestPath := filepath.Join(bucket.ManifestDir(bucketName), appName+".json")
+	updatedAt, updatedBy, err := gitutil.LastCommitInfo(repoDir, manifestPath)
+	if err != nil {
+		app.LogDebug("unable to read manifest commit info for %s: %v", appName, err)
+		return time.Time{}, ""
+	}
+	return updatedAt, updatedBy
+}
+
+func installedVersions(appName string) []string {
+	type installedVersion struct {
+		version string
+		scope   string
+		global  bool
+	}
+
+	var installed []installedVersion
+	for _, global := range []bool{false, true} {
+		appDir := filepath.Join(app.AppDir(global), appName)
+		entries, err := os.ReadDir(appDir)
+		if err != nil {
+			continue
+		}
+
+		scope := "user"
+		if global {
+			scope = "global"
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Name() == "current" {
+				continue
+			}
+			installed = append(installed, installedVersion{
+				version: entry.Name(),
+				scope:   scope,
+				global:  global,
+			})
+		}
+	}
+
+	sort.Slice(installed, func(i, j int) bool {
+		if installed[i].version != installed[j].version {
+			return version.Compare(installed[i].version, installed[j].version) > 0
+		}
+		if installed[i].global != installed[j].global {
+			return !installed[i].global
+		}
+		return installed[i].scope < installed[j].scope
+	})
+
+	out := make([]string, 0, len(installed))
+	for _, item := range installed {
+		out = append(out, fmt.Sprintf("%s (%s)", item.version, item.scope))
+	}
+	return out
+}
+
 func init() {
 	rootCmd.AddCommand(infoCmd)
 	infoCmd.Flags().BoolVarP(&infoFlags.verbose, "verbose", "v", false, "Show full paths for installed app and manifest")
 }
-

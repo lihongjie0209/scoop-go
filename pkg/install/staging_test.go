@@ -93,6 +93,10 @@ func TestPromoteStagingFailsIfTargetOccupied(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(versionDir, "existing")); !os.IsNotExist(err) {
 		t.Fatal("force promote should replace old version dir contents")
 	}
+	// Backup leftover from force promote should be cleaned
+	if _, err := os.Stat(versionDir + ".scoop-old"); !os.IsNotExist(err) {
+		t.Fatal("force promote should remove .scoop-old backup after success")
+	}
 }
 
 func TestDiscardStaging(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -320,7 +321,7 @@ func findHashInJSON(ctx context.Context, client *http.Client, hashURL string, su
 		return "", err
 	}
 	jsonPath = substituteVersionString(jsonPath, subs)
-	// Very small JSONPath subset: $.a.b.c or a.b.c
+	// JSONPath subset: $.a.b[0].c — handles map keys and integer array indices.
 	path := strings.TrimPrefix(jsonPath, "$")
 	path = strings.TrimPrefix(path, ".")
 	var root any
@@ -332,17 +333,36 @@ func findHashInJSON(ctx context.Context, client *http.Client, hashURL string, su
 		if part == "" {
 			continue
 		}
-		// Skip filters for now; handle simple keys
+		key := part
+		idx := -1
 		if i := strings.Index(part, "["); i >= 0 {
-			part = part[:i]
+			key = part[:i]
+			// Parse the array index from "[N]"
+			if j := strings.Index(part[i:], "]"); j >= 0 {
+				idxStr := part[i+1 : i+j]
+				if n, err := strconv.Atoi(idxStr); err == nil {
+					idx = n
+				}
+			}
 		}
-		m, ok := cur.(map[string]any)
-		if !ok {
-			return "", nil
+		// Navigate map key
+		if key != "" {
+			m, ok := cur.(map[string]any)
+			if !ok {
+				return "", nil
+			}
+			cur, ok = m[key]
+			if !ok {
+				return "", nil
+			}
 		}
-		cur, ok = m[part]
-		if !ok {
-			return "", nil
+		// Navigate array index
+		if idx >= 0 {
+			arr, ok := cur.([]any)
+			if !ok || idx >= len(arr) {
+				return "", nil
+			}
+			cur = arr[idx]
 		}
 	}
 	switch v := cur.(type) {

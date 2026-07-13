@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/scoopinstaller/scoop-go/pkg/app"
 	"github.com/spf13/cobra"
@@ -28,27 +29,20 @@ To remove a configuration setting:
 		cfg := app.Config()
 
 		if len(args) == 0 {
-			// Print all config
-			fmt.Printf("%-30s %v\n", "root_path", cfg.Config().RootPath)
-			fmt.Printf("%-30s %v\n", "global_path", cfg.Config().GlobalPath)
-			fmt.Printf("%-30s %v\n", "cache_path", cfg.Config().CachePath)
-			fmt.Printf("%-30s %v\n", "proxy", cfg.Config().Proxy)
-			fmt.Printf("%-30s %v\n", "scoop_repo", cfg.Config().SCOOPRepo)
-			fmt.Printf("%-30s %v\n", "scoop_branch", cfg.Config().SCOOPBranch)
-			fmt.Printf("%-30s %v\n", "aria2-enabled", boolPtrDisplay(cfg.Config().Aria2Enabled))
-			fmt.Printf("%-30s %v\n", "aria2-warning-enabled", boolPtrDisplay(cfg.Config().Aria2WarningEnabled))
-			fmt.Printf("%-30s %v\n", "aria2-retry-wait", cfg.Config().Aria2RetryWait)
-			fmt.Printf("%-30s %v\n", "aria2-split", cfg.Config().Aria2Split)
-			fmt.Printf("%-30s %v\n", "aria2-max-connection-per-server", cfg.Config().Aria2MaxConnPerServer)
-			fmt.Printf("%-30s %v\n", "aria2-min-split-size", cfg.Config().Aria2MinSplitSize)
-			fmt.Printf("%-30s %v\n", "debug", cfg.Config().Debug)
-			fmt.Printf("%-30s %v\n", "force_update", cfg.Config().ForceUpdate)
-			fmt.Printf("%-30s %v\n", "show_update_log", boolPtrDisplay(cfg.Config().ShowUpdateLog))
-			fmt.Printf("%-30s %v\n", "use_sqlite_cache", cfg.Config().UseSQLiteCache)
-			fmt.Printf("%-30s %v\n", "no_junction", cfg.Config().NoJunction)
-			fmt.Printf("%-30s %v\n", "use_isolated_path", cfg.Config().UseIsolatedPath)
-			fmt.Printf("%-30s %v\n", "ignore_running_processes", cfg.Config().IgnoreRunningProcesses)
-			fmt.Printf("%-30s %v\n", "last_update", cfg.Config().LastUpdate)
+			// Print all config values using struct field JSON tags.
+			c := cfg.Config()
+			rv := reflect.ValueOf(*c)
+			rt := rv.Type()
+			for i := range rt.NumField() {
+				field := rt.Field(i)
+				tag := field.Tag.Get("json")
+				if tag == "" || tag == "-" {
+					continue
+				}
+				key := strings.Split(tag, ",")[0]
+				val := rv.Field(i)
+				fmt.Printf("%-35s %s\n", key, formatFieldValue(val))
+			}
 			return nil
 		}
 
@@ -71,7 +65,7 @@ To remove a configuration setting:
 			if val == nil {
 				fmt.Printf("'%s' is not set\n", name)
 			} else {
-				fmt.Println(displayConfigValue(val))
+				fmt.Println(formatFieldValue(reflect.ValueOf(val)))
 			}
 			return nil
 		}
@@ -96,20 +90,61 @@ func boolPtrDisplay(b *bool) string {
 	return fmt.Sprintf("%v", *b)
 }
 
-// displayConfigValue formats a config value for display,
-// dereferencing pointer types to show their actual values.
 func displayConfigValue(v interface{}) string {
 	if v == nil {
 		return "<nil>"
 	}
+
 	rv := reflect.ValueOf(v)
 	if rv.Kind() == reflect.Ptr {
 		if rv.IsNil() {
 			return "<nil>"
 		}
-		return fmt.Sprintf("%v", rv.Elem().Interface())
+		return displayConfigValue(rv.Elem().Interface())
 	}
+
 	return fmt.Sprintf("%v", v)
+}
+
+// formatFieldValue returns a human-readable string for a reflect.Value,
+// handling pointers, slices, and zero values.
+func formatFieldValue(v reflect.Value) string {
+	switch v.Kind() {
+	case reflect.Ptr:
+		if v.IsNil() {
+			return "<not set>"
+		}
+		return formatFieldValue(v.Elem())
+	case reflect.Slice:
+		if v.IsNil() || v.Len() == 0 {
+			return "<not set>"
+		}
+		return fmt.Sprintf("%v", v.Interface())
+	case reflect.Map:
+		if v.IsNil() || v.Len() == 0 {
+			return "<not set>"
+		}
+		return fmt.Sprintf("%v", v.Interface())
+	case reflect.String:
+		if v.String() == "" {
+			return "<not set>"
+		}
+		return v.String()
+	case reflect.Bool:
+		return fmt.Sprintf("%v", v.Bool())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if v.Int() == 0 {
+			return "<not set>"
+		}
+		return fmt.Sprintf("%d", v.Int())
+	case reflect.Interface:
+		if v.IsNil() {
+			return "<not set>"
+		}
+		return fmt.Sprintf("%v", v.Elem().Interface())
+	default:
+		return fmt.Sprintf("%v", v.Interface())
+	}
 }
 
 func init() {

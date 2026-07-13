@@ -6,9 +6,12 @@ package gitutil
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 	gogitConfig "github.com/go-git/go-git/v5/config"
@@ -150,6 +153,11 @@ func RemoteURL(repoPath string) (string, error) {
 	return "", fmt.Errorf("no remote URL configured")
 }
 
+// GetRemoteURL returns the origin remote URL.
+func GetRemoteURL(repoPath string) (string, error) {
+	return RemoteURL(repoPath)
+}
+
 // IsRepo checks if a directory is a git repository.
 func IsRepo(path string) bool {
 	_, err := gogit.PlainOpen(path)
@@ -172,12 +180,50 @@ func LsRemote(url string) error {
 	return nil
 }
 
+// LastCommitInfo returns the last commit time and author for a file in a git repo.
+// Returns zero time and empty string if not in a git repo or the file is not tracked.
+func LastCommitInfo(repoDir, filePath string) (time.Time, string, error) {
+	repo, err := gogit.PlainOpen(repoDir)
+	if err != nil {
+		return time.Time{}, "", nil
+	}
+
+	relPath := filePath
+	if filepath.IsAbs(filePath) {
+		relPath, err = filepath.Rel(repoDir, filePath)
+		if err != nil {
+			return time.Time{}, "", err
+		}
+	}
+	relPath = filepath.ToSlash(relPath)
+
+	iter, err := repo.Log(&gogit.LogOptions{FileName: &relPath})
+	if err != nil {
+		return time.Time{}, "", nil
+	}
+
+	commit, err := iter.Next()
+	if err == io.EOF {
+		return time.Time{}, "", nil
+	}
+	if err != nil {
+		return time.Time{}, "", err
+	}
+
+	return commit.Author.When.UTC(), commit.Author.Name, nil
+}
+
+// ErrShallowHistory indicates commits are missing (e.g. after depth=1 re-clone).
+// Callers should fall back to a full cache rebuild rather than treating as "no changes".
+var ErrShallowHistory = fmt.Errorf("git history unavailable for diff (shallow clone or missing commit)")
+
 // NameStatus returns file changes between two commits (git diff --name-status).
-// Uses go-git; for shallow clones where oldHash doesn't exist, returns empty.
+// When old/new commits are missing from local history (typical after re-clone),
+// it returns ErrShallowHistory so callers force a full rebuild.
 func NameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, error) {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 	newHash = strings.TrimSpace(newHash)
 	oldHash = strings.TrimSpace(oldHash)
@@ -186,7 +232,7 @@ func NameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, error) {
 	}
 	newCommit, err := repo.CommitObject(plumbing.NewHash(newHash))
 	if err != nil {
-		return nil, nil // shallow clone — new commit exists locally
+		return nil, fmt.Errorf("%w: new %s: %v", ErrShallowHistory, newHash, err)
 	}
 	newTree, err := newCommit.Tree()
 	if err != nil {
@@ -196,7 +242,7 @@ func NameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, error) {
 	if oldHash != "" {
 		oldCommit, err := repo.CommitObject(plumbing.NewHash(oldHash))
 		if err != nil {
-			return nil, nil // shallow clone — old commit not in local history
+			return nil, fmt.Errorf("%w: old %s: %v", ErrShallowHistory, oldHash, err)
 		}
 		oldTree, err = oldCommit.Tree()
 		if err != nil {
@@ -210,7 +256,7 @@ func NameStatus(repoPath, oldHash, newHash string) ([]NameStatusEntry, error) {
 		changes, err = object.DiffTree(oldTree, newTree)
 	}
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 	var out []NameStatusEntry
 	for _, ch := range changes {

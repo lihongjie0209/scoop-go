@@ -108,6 +108,59 @@ func TestFindManifestLocalAndMissing(t *testing.T) {
 	}
 }
 
+func TestFindAvailableManifestPreferredBucket(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SCOOP", root)
+	for _, b := range []string{"main", "extras"} {
+		_ = os.MkdirAll(filepath.Join(root, "buckets", b, "bucket"), 0755)
+	}
+	if err := app.Initialize(filepath.Join(root, "c.json")); err != nil {
+		t.Fatal(err)
+	}
+	// Same app name in two buckets with different versions
+	_ = os.WriteFile(filepath.Join(root, "buckets", "main", "bucket", "tool.json"),
+		[]byte(`{"version":"1.0.0","homepage":"https://ex","license":"MIT","url":"https://ex/a.zip"}`), 0644)
+	_ = os.WriteFile(filepath.Join(root, "buckets", "extras", "bucket", "tool.json"),
+		[]byte(`{"version":"9.9.9","homepage":"https://ex","license":"MIT","url":"https://ex/a.zip"}`), 0644)
+
+	m, b, err := FindAvailableManifest("tool", "extras")
+	if err != nil || b != "extras" || m.Version != "9.9.9" {
+		t.Fatalf("preferred extras: m=%v bucket=%q err=%v", m, b, err)
+	}
+	m, b, err = FindAvailableManifest("tool", "main")
+	if err != nil || b != "main" || m.Version != "1.0.0" {
+		t.Fatalf("preferred main: m=%v bucket=%q err=%v", m, b, err)
+	}
+	// Missing in preferred bucket (not silent fallback to other bucket)
+	if _, _, err := FindAvailableManifest("tool", "nonexistent"); err == nil {
+		t.Fatal("expected error for missing preferred bucket")
+	}
+}
+
+func TestFindAvailableManifestNotInstalledFirst(t *testing.T) {
+	// Bucket version wins over a different installed version (PS Get-Manifest for update/install)
+	root := t.TempDir()
+	t.Setenv("SCOOP", root)
+	_ = os.MkdirAll(filepath.Join(root, "buckets", "main", "bucket"), 0755)
+	_ = os.MkdirAll(filepath.Join(root, "apps", "tool", "current"), 0755)
+	if err := app.Initialize(filepath.Join(root, "c.json")); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(root, "buckets", "main", "bucket", "tool.json"),
+		[]byte(`{"version":"2.0.0","homepage":"https://ex","license":"MIT","url":"https://ex/a.zip"}`), 0644)
+	_ = os.WriteFile(filepath.Join(root, "apps", "tool", "current", "manifest.json"),
+		[]byte(`{"version":"1.0.0","homepage":"https://ex","license":"MIT","url":"https://ex/a.zip"}`), 0644)
+
+	m, b, err := FindAvailableManifest("tool", "")
+	if err != nil || b != "main" || m.Version != "2.0.0" {
+		t.Fatalf("want bucket 2.0.0, got m=%v bucket=%q err=%v", m, b, err)
+	}
+	inst, err := FindInstalledManifest("tool", false)
+	if err != nil || inst.Version != "1.0.0" {
+		t.Fatalf("installed should remain 1.0.0: %v %v", inst, err)
+	}
+}
+
 func TestBucketForApp(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SCOOP", root)

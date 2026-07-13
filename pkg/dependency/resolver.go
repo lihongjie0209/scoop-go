@@ -117,7 +117,7 @@ func resolve(appName, arch string, resolved, unresolved []string) ([]string, err
 	}
 
 	helpers := getInstallationHelpers(m, arch)
-	deps := uniqueStrings(append(helpers, m.Depends...))
+	deps := uniqueStrings(append(helpers, m.GetDepends(arch)...))
 	for _, dep := range deps {
 		r, err := resolve(dep, arch, resolved, unresolved)
 		if err != nil {
@@ -194,11 +194,17 @@ func scriptMentions(scripts []string, needle string) bool {
 }
 
 func needsLessMSI(urls []string, scripts []string) bool {
+	// PowerShell: (Test-LessmsiRequirement OR Expand-MsiArchive) AND use_lessmsi
+	useLess := false
+	if app.Config() != nil {
+		useLess = app.Config().Config().UseLessMSI
+	}
+	if !useLess {
+		return false
+	}
 	if scriptMentions(scripts, "Expand-MsiArchive") {
 		return true
 	}
-	// Mirror PS: only when use_lessmsi is configured. We always suggest lessmsi
-	// for .msi URLs if the helper is missing; install may still use msiexec.
 	for _, u := range urls {
 		if strings.HasSuffix(strings.ToLower(strings.Split(u, "?")[0]), ".msi") {
 			return true

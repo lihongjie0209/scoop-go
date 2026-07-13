@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/scoopinstaller/scoop-go/pkg/app"
 	"github.com/scoopinstaller/scoop-go/pkg/status"
@@ -61,6 +62,7 @@ You can use '*' or '--all' in place of <app> to update all apps.`,
 			return updateAllApps()
 		}
 
+		var firstErr error
 		for _, appName := range args {
 			if appName == "scoop" {
 				if err := update.SyncScoop(Version); err != nil {
@@ -74,27 +76,34 @@ You can use '*' or '--all' in place of <app> to update all apps.`,
 				updateFlags.global, updateFlags.force, updateFlags.quiet, updateFlags.independent,
 				!updateFlags.noCache, !updateFlags.skipHash); err != nil {
 				app.LogError("Updating '%s': %v", appName, err)
+				if firstErr == nil {
+					firstErr = err
+				}
 			}
 		}
 
-		return nil
+		return firstErr
 	},
 }
 
 // updateAllApps updates all installed apps that have newer versions available.
+// Also re-fetches nightly apps when update_nightly is enabled (PS parity).
 func updateAllApps() error {
 	app.LogInfo("Updating all apps...")
 
 	statuses := status.CheckAppStatuses()
+	cfg := app.Config()
+	updateNightly := cfg != nil && cfg.Config().UpdateNightly
 
-	var outdated []status.AppStatus
+	var toUpdate []status.AppStatus
 	for _, s := range statuses {
-		if s.Outdated {
-			outdated = append(outdated, s)
+		isNightly := strings.HasPrefix(s.Version, "nightly") || strings.HasPrefix(s.LatestVersion, "nightly")
+		if s.Outdated || (isNightly && updateNightly) {
+			toUpdate = append(toUpdate, s)
 		}
 	}
 
-	if len(outdated) == 0 {
+	if len(toUpdate) == 0 {
 		app.LogSuccess("All apps are up to date!")
 		return nil
 	}
@@ -103,17 +112,23 @@ func updateAllApps() error {
 	skipped := 0
 	failed := 0
 
-	for _, s := range outdated {
+	for _, s := range toUpdate {
 		if s.Hold {
 			app.LogWarn("Skipping '%s' (%s): app is on hold", s.Name, s.Version)
 			skipped++
 			continue
 		}
 
+		force := false
+		isNightly := strings.HasPrefix(s.Version, "nightly") || strings.HasPrefix(s.LatestVersion, "nightly")
+		if isNightly && updateNightly && !s.Outdated {
+			force = true // force reinstall same-day or date-bump nightly
+		}
+
 		app.LogInfo("Updating '%s' (%s -> %s)...", s.Name, s.Version, s.LatestVersion)
 
 		if err := update.UpdateApp(context.Background(), s.Name,
-			s.Global, false, false, updateFlags.independent,
+			s.Global, force, false, updateFlags.independent,
 			!updateFlags.noCache, !updateFlags.skipHash); err != nil {
 			app.LogError("Failed to update '%s': %v", s.Name, err)
 			failed++
@@ -124,6 +139,9 @@ func updateAllApps() error {
 	}
 
 	app.LogInfo("Summary: %d updated, %d skipped (on hold), %d failed", updated, skipped, failed)
+	if failed > 0 {
+		return fmt.Errorf("%d app(s) failed to update", failed)
+	}
 	return nil
 }
 

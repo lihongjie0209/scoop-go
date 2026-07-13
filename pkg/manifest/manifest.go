@@ -64,9 +64,7 @@ type Manifest struct {
 	EnvSet     map[string]string `json:"env_set,omitempty"`
 
 	// === PowerShell Module ===
-	PsModule *struct {
-		Name string `json:"name"`
-	} `json:"psmodule,omitempty"`
+	PsModule *PsModule `json:"psmodule,omitempty"`
 
 	// === Cookie (download authentication) ===
 	Cookie map[string]string `json:"cookie,omitempty"`
@@ -107,6 +105,14 @@ type ArchContent struct {
 	PostUninstall FlexibleStrings   `json:"post_uninstall,omitempty"`
 	Installer     *Installer        `json:"installer,omitempty"`
 	Uninstaller   *Uninstaller      `json:"uninstaller,omitempty"`
+	// Fields that may also be overridden per-architecture:
+	Cookie   map[string]string `json:"cookie,omitempty"`
+	PsModule *PsModule `json:"psmodule,omitempty"`
+	Persist any                        `json:"persist,omitempty"` // string, []string, or [][2]string
+	Notes   FlexibleStrings            `json:"notes,omitempty"`
+	License any                        `json:"license,omitempty"` // string or LicenseObj
+	Depends FlexibleStrings            `json:"depends,omitempty"`
+	Suggest map[string]FlexibleStrings `json:"suggest,omitempty"`
 }
 
 // Installer describes how to run the app's installer.
@@ -128,6 +134,10 @@ type Uninstaller struct {
 type LicenseObj struct {
 	Identifier string `json:"identifier"`
 	URL        string `json:"url,omitempty"`
+}
+
+type PsModule struct {
+	Name string `json:"name"`
 }
 
 // CheckverObj is the structured form of checkver.
@@ -331,6 +341,55 @@ func (m *Manifest) GetExtractTo(arch string) any {
 		return ac.ExtractTo
 	}
 	return m.ExtractTo
+}
+
+func (m *Manifest) GetCookie(arch string) map[string]string {
+	if ac := m.GetArchContent(arch); ac != nil && len(ac.Cookie) > 0 {
+		return ac.Cookie
+	}
+	return m.Cookie
+}
+
+func (m *Manifest) GetPsModule(arch string) *PsModule {
+	if ac := m.GetArchContent(arch); ac != nil && ac.PsModule != nil {
+		return ac.PsModule
+	}
+	return m.PsModule
+}
+
+func (m *Manifest) GetPersist(arch string) any {
+	if ac := m.GetArchContent(arch); ac != nil && ac.Persist != nil {
+		return ac.Persist
+	}
+	return m.Persist
+}
+
+func (m *Manifest) GetNotes(arch string) []string {
+	if ac := m.GetArchContent(arch); ac != nil && len(ac.Notes) > 0 {
+		return ac.Notes
+	}
+	return m.Notes
+}
+
+func (m *Manifest) GetLicense(arch string) any {
+	if ac := m.GetArchContent(arch); ac != nil && ac.License != nil {
+		return ac.License
+	}
+	return m.License
+}
+
+func (m *Manifest) GetDepends(arch string) []string {
+	if ac := m.GetArchContent(arch); ac != nil && len(ac.Depends) > 0 {
+		return ac.Depends
+	}
+	return m.Depends
+}
+
+func (m *Manifest) GetSuggest(arch string) map[string]FlexibleStrings {
+	if ac := m.GetArchContent(arch); ac != nil && len(ac.Suggest) > 0 {
+		return ac.Suggest
+	}
+	return m.Suggest
 }
 
 // --- Utility functions ---

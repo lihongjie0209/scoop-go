@@ -120,17 +120,18 @@ func (e *Engine) Install(ctx context.Context) (retErr error) {
 
 	// Step 3: Extract archives
 	if err := e.extractFiles(ctx, m, workDir, downloadedFiles); err != nil {
-		for _, f := range downloadedFiles {
-			cacheKey := fmt.Sprintf("%s#%s#%s", e.AppName, e.Version, shortHash(f))
+		// Cache keys are based on URL (not local path) — purge by URL list
+		for _, u := range m.GetURL(e.Arch) {
+			cacheKey := fmt.Sprintf("%s#%s#%s", e.AppName, e.Version, shortHash(u))
 			cachedPath := filepath.Join(app.Dirs().CacheDir, cacheKey)
 			os.Remove(cachedPath)
-			app.LogDebug("Removed cache entry for corrupted download: %s", filepath.Base(f))
+			app.LogDebug("Removed cache entry for corrupted download: %s", filepath.Base(u))
 		}
 		return fmt.Errorf("extraction failed: %w", err)
 	}
 
-	// Step 4: Run pre_install hooks
-	if err := e.runHooks(ctx, m.GetPreInstall(e.Arch), workDir); err != nil {
+	// Step 4: Run pre_install hooks ($dir = workDir at this stage; no current yet)
+	if err := e.runHooks(ctx, m.GetPreInstall(e.Arch), workDir, workDir); err != nil {
 		return fmt.Errorf("pre_install hook failed: %w", err)
 	}
 
@@ -170,22 +171,14 @@ func (e *Engine) Install(ctx context.Context) (retErr error) {
 	}
 	journal.MarkCurrentLinked()
 
-	// Step 7a: Create shims for all binaries
-	if err := e.createShims(m, currentDir); err != nil {
+	// Step 7a: Create shims (record each as created for rollback)
+	if err := e.createShims(m, currentDir, journal); err != nil {
 		return fmt.Errorf("creating shims: %w", err)
-	}
-	for _, bin := range manifest.BinEntries(m.GetBin(e.Arch)) {
-		journal.RecordShim(bin[1])
 	}
 
 	// Step 7b: Create start menu shortcuts
-	if err := e.createShortcuts(m, currentDir); err != nil {
+	if err := e.createShortcuts(m, currentDir, journal); err != nil {
 		return fmt.Errorf("creating shortcuts: %w", err)
-	}
-	for _, sc := range m.GetShortcuts(e.Arch) {
-		if len(sc) > 1 {
-			journal.RecordShortcut(sc[1])
-		}
 	}
 
 	// Step 7c: Install PowerShell module
@@ -194,37 +187,37 @@ func (e *Engine) Install(ctx context.Context) (retErr error) {
 	}
 
 	// Step 7d: Add PATH entries
-	if err := e.envAddPath(m, currentDir); err != nil {
+	if err := e.envAddPath(m, currentDir, journal); err != nil {
 		return fmt.Errorf("adding PATH: %w", err)
-	}
-	for _, p := range m.GetEnvAddPath(e.Arch) {
-		journal.RecordPath(filepath.Join(currentDir, p))
 	}
 
 	// Step 7e: Set environment variables
-	if err := e.envSet(m); err != nil {
+	if err := e.envSet(m, journal); err != nil {
 		return fmt.Errorf("setting env: %w", err)
-	}
-	for name := range m.GetEnvSet(e.Arch) {
-		journal.RecordEnv(name)
 	}
 
 	// Step 8: Persist data (after promote so links point at final version dir)
 	if err := e.persistData(ctx, m, originalDir); err != nil {
 		return fmt.Errorf("persisting data: %w", err)
 	}
+	// Grant Users group Write access on the global persist dir so non-admin
+	// users can modify persisted data. Mirrors persist_permission() in PS.
+	if e.Global && m.GetPersist(e.Arch) != nil {
+		persistPermission(app.PersistDir(e.AppName, true))
+	}
 
 	// Step 9: Run post_install hooks
-	if err := e.runHooks(ctx, m.GetPostInstall(e.Arch), versionDir); err != nil {
+	// PS: $dir ≈ current (junction), $original_dir ≈ real version directory
+	if err := e.runHooks(ctx, m.GetPostInstall(e.Arch), currentDir, versionDir); err != nil {
 		return fmt.Errorf("post_install hook failed: %w", err)
 	}
 
 	// Show notes (with Scoop variable substitution)
-	if len(m.Notes) > 0 {
+	if notes := m.GetNotes(e.Arch); len(notes) > 0 {
 		fmt.Println()
 		app.LogInfo("Notes")
 		app.LogInfo("-----")
-		notes := SubstituteNotes(m.Notes, NoteVars{
+		notes = SubstituteNotes(notes, NoteVars{
 			Dir:         currentDir,
 			OriginalDir: originalDir,
 			PersistDir:  app.PersistDir(appName, e.Global),
@@ -267,7 +260,7 @@ func (e *Engine) downloadFiles(ctx context.Context, m *manifest.Manifest, destDi
 			CacheDir:     app.Dirs().CacheDir,
 			CacheKey:     fmt.Sprintf("%s#%s#%s", e.AppName, e.Version, shortHash(url)),
 			UseCache:     e.UseCache,
-			Cookies:      m.Cookie,
+			Cookies:      m.GetCookie(e.Arch),
 			ExpectedHash: expectedHash,
 			GithubToken:  app.Config().Config().GH_TOKEN,
 			Proxy:        app.Config().Config().Proxy,
@@ -343,7 +336,12 @@ func parsePrivateHostHeaders(raw string, target map[string]string) {
 
 // extractFiles extracts downloaded archives based on their types.
 func (e *Engine) extractFiles(ctx context.Context, m *manifest.Manifest, destDir string, files []string) error {
-	for _, file := range files {
+	// Resolve extract_dir/extract_to as arrays so each archive can target a
+	// different subdirectory when the manifest supplies multiple values.
+	extractDirAll := toStringSlice(m.GetExtractDir(e.Arch))
+	extractToAll := toStringSlice(m.GetExtractTo(e.Arch))
+
+	for fileIdx, file := range files {
 		var extractor extract.Extractor
 
 		// Check manifest configuration FIRST, then extension.
@@ -388,7 +386,8 @@ func (e *Engine) extractFiles(ctx context.Context, m *manifest.Manifest, destDir
 
 		// Read extract_to from manifest; it specifies a subdirectory within
 		// the version directory where archive contents should be placed.
-		extractTo := normalizeExtractDir(m.GetExtractTo(e.Arch))
+		// When the manifest provides an array, use the i-th element (fall back to [0]).
+		extractTo := indexedString(extractToAll, fileIdx)
 
 		effectiveDest := destDir
 		if extractTo != "" {
@@ -398,7 +397,7 @@ func (e *Engine) extractFiles(ctx context.Context, m *manifest.Manifest, destDir
 		cfg := &extract.Config{
 			Source:      file,
 			Destination: effectiveDest,
-			ExtractDir:  normalizeExtractDir(m.GetExtractDir(e.Arch)),
+			ExtractDir:  indexedString(extractDirAll, fileIdx),
 			ExtractTo:   extractTo,
 			RemoveSrc:   true,
 		}
@@ -422,20 +421,19 @@ func (e *Engine) extractFiles(ctx context.Context, m *manifest.Manifest, destDir
 }
 
 // runHooks executes manifest hook scripts (pre_install, post_install, etc.).
-// Supports inline PowerShell execution and simple commands.
-func (e *Engine) runHooks(ctx context.Context, hooks []string, dir string) error {
-	// Join all hooks into a single PowerShell script if any contain PS syntax.
-	// Manifest hooks can be multi-line (e.g., ForEach-Object blocks spanning
-	// multiple array elements) and must be executed as one script.
+// dir is $dir (usually current junction); originalDir is $original_dir (version dir).
+func (e *Engine) runHooks(ctx context.Context, hooks []string, dir, originalDir string) error {
+	if originalDir == "" {
+		originalDir = dir
+	}
 	if hasPowerShellHooks(hooks) {
-		return e.runPowerShellScript(hooks, dir)
+		return e.runPowerShellScript(hooks, dir, originalDir)
 	}
 
-	// Simple commands — run each directly
 	for _, hook := range hooks {
 		simpleHook := hook
 		simpleHook = strings.ReplaceAll(simpleHook, "$dir", dir)
-		simpleHook = strings.ReplaceAll(simpleHook, "$original_dir", dir)
+		simpleHook = strings.ReplaceAll(simpleHook, "$original_dir", originalDir)
 		simpleHook = strings.ReplaceAll(simpleHook, "$version", e.Version)
 		simpleHook = strings.ReplaceAll(simpleHook, "$global", fmt.Sprintf("%v", e.Global))
 
@@ -453,16 +451,15 @@ func (e *Engine) runHooks(ctx context.Context, hooks []string, dir string) error
 }
 
 // runPowerShellScript joins all hooks into a single PowerShell script and executes it.
-func (e *Engine) runPowerShellScript(hooks []string, dir string) error {
-	// Build a single PowerShell script from all hook lines.
-	// Variables like $dir, $version are defined in the PS preamble so
-	// PowerShell resolves them natively within double-quoted strings.
+func (e *Engine) runPowerShellScript(hooks []string, dir, originalDir string) error {
 	fullScript := strings.Join(hooks, "\n")
 	app.LogDebug("Executing PowerShell hook script:\n%s", fullScript)
+	// Escape % so Sprintf does not treat script body as format verbs
+	fullScript = strings.ReplaceAll(fullScript, "%", "%%")
 	fullScript = "try {\n" + fullScript + "\n} catch { Write-Error $_; exit 1 }; exit 0"
 
-	// Set Scoop PowerShell variables (PS runs hooks in-session, Go spawns new process)
 	psDir := strings.ReplaceAll(dir, "'", "''")
+	psOriginal := strings.ReplaceAll(originalDir, "'", "''")
 	scoopDir := strings.ReplaceAll(app.Dirs().ScoopDir, "'", "''")
 	bucketsDir := strings.ReplaceAll(app.Dirs().BucketsDir, "'", "''")
 	appsDir := strings.ReplaceAll(app.Dirs().AppsDir, "'", "''")
@@ -474,6 +471,7 @@ func (e *Engine) runPowerShellScript(hooks []string, dir string) error {
 	if e.Global {
 		psGlobal = "$true"
 	}
+	// fullScript is last %s so user content is not format string
 	psCmd := fmt.Sprintf(
 		powerShellCompatibilityPreamble()+
 			"$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8;"+
@@ -491,9 +489,11 @@ func (e *Engine) runPowerShellScript(hooks []string, dir string) error {
 			" $architecture = '%s';"+
 			" $app = '%s';"+
 			" %s",
-		psDir, psDir, e.Version, psGlobal,
+		psDir, psOriginal, e.Version, psGlobal,
 		scoopDir, bucketsDir, appsDir, cacheDir, shimsDir,
 		persistDataDir, bucketName, e.Arch, e.AppName, fullScript)
+	// Undo %% for PowerShell after sprintf
+	psCmd = strings.ReplaceAll(psCmd, "%%", "%")
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-Ex", "Unrestricted",
 		"-Command", psCmd)
 	output, err := cmd.CombinedOutput()
@@ -576,7 +576,6 @@ func (e *Engine) runInstaller(ctx context.Context, m *manifest.Manifest, dir str
 		for k, v := range substitutions {
 			fullScript = strings.ReplaceAll(fullScript, k, v)
 		}
-		fullScript = "try {\n" + fullScript + "\n} catch { Write-Error $_; exit 1 }; exit 0"
 		if strings.Contains(fullScript, "Expand-DarkArchive") {
 			if _, err := exec.LookPath("dark"); err != nil {
 				installHelper("dark")
@@ -587,16 +586,18 @@ func (e *Engine) runInstaller(ctx context.Context, m *manifest.Manifest, dir str
 				installHelper("innounp")
 			}
 		}
-		psCmd := fmt.Sprintf(
-			powerShellCompatibilityPreamble() +
-			"$appsdir = '%s'; $bucketsdir = '%s'; $scoopdir = '%s'; $cachedir = '%s'; $shimsdir = '%s';" +
-			"function Expand-DarkArchive{param($Path,$DestinationPath,[switch]$Removal)try{& dark -nologo -x $DestinationPath $Path}catch{throw}}" +
-			"function Expand-InnoArchive{param($Path,$DestinationPath,$ExtractDir,[switch]$Removal)try{& innounp -x -d $DestinationPath $Path -y}catch{throw}}" +
-			"function Expand-MsiArchive{param($Path,$DestinationPath,$ExtractDir,[switch]$Removal)try{$sd=join-path $DestinationPath SourceDir;msiexec /a $Path /qn (\"TARGETDIR=\"+$sd);if(test-path $sd){gci $sd|cp -dest $DestinationPath -re -force;ri $sd -re -fo}}catch{throw}}" +
-			"function Invoke-ExternalCommand{$e=$null;$a=@();$i=0;while($i -lt $args.Count){if($args[$i]-eq\"-Path\"-or$args[$i]-eq\"-FilePath\"){$e=$args[++$i]}elseif($args[$i]-eq\"-ArgumentList\"-or$args[$i]-eq\"-Args\"){$a=$args[++$i]};$i++};if(!$e){$e=$args[0]};& $e @a;if($LASTEXITCODE){throw}}" +
-			fullScript,
+		// Build preamble with safe %s args; append script separately so %TEMP% etc. are intact
+		preamble := fmt.Sprintf(
+			powerShellCompatibilityPreamble()+
+				"$appsdir = '%s'; $bucketsdir = '%s'; $scoopdir = '%s'; $cachedir = '%s'; $shimsdir = '%s';"+
+				"function Expand-DarkArchive{param($Path,$DestinationPath,[switch]$Removal)try{& dark -nologo -x $DestinationPath $Path}catch{throw}}"+
+				"function Expand-InnoArchive{param($Path,$DestinationPath,$ExtractDir,[switch]$Removal)try{& innounp -x -d $DestinationPath $Path -y}catch{throw}}"+
+				"function Expand-MsiArchive{param($Path,$DestinationPath,$ExtractDir,[switch]$Removal)try{$sd=join-path $DestinationPath SourceDir;msiexec /a $Path /qn (\"TARGETDIR=\"+$sd);if(test-path $sd){gci $sd|cp -dest $DestinationPath -re -force;ri $sd -re -fo}}catch{throw}}"+
+				"function Invoke-ExternalCommand{$e=$null;$a=@();$i=0;while($i -lt $args.Count){if($args[$i]-eq\"-Path\"-or$args[$i]-eq\"-FilePath\"){$e=$args[++$i]}elseif($args[$i]-eq\"-ArgumentList\"-or$args[$i]-eq\"-Args\"){$a=$args[++$i]};$i++};if(!$e){$e=$args[0]};& $e @a;if($LASTEXITCODE){throw}}"+
+				"try {\n",
 			app.Dirs().AppsDir, app.Dirs().BucketsDir, app.Dirs().ScoopDir,
 			app.Dirs().CacheDir, app.Dirs().ShimsDir)
+		psCmd := preamble + fullScript + "\n} catch { Write-Error $_; exit 1 }; exit 0"
 		app.LogDebug("Running installer script")
 		cmd := exec.Command("powershell.exe", "-NoProfile", "-Ex", "Unrestricted", "-Command", psCmd)
 		output, err := cmd.CombinedOutput()
@@ -606,7 +607,6 @@ func (e *Engine) runInstaller(ctx context.Context, m *manifest.Manifest, dir str
 		if len(output) > 0 {
 			fmt.Print(string(output))
 		}
-		// Script-only installers have no file to clean up
 		if inst.File == "" {
 			return nil
 		}
@@ -756,7 +756,7 @@ func (e *Engine) isNoJunction() bool {
 //   - Files: creates a hard link via os.Link with file copy fallback
 //   - When NO_JUNCTION is set: copies files/directories instead of linking
 func (e *Engine) persistData(ctx context.Context, m *manifest.Manifest, originalDir string) error {
-	persist := m.Persist
+	persist := m.GetPersist(e.Arch)
 	if persist == nil {
 		return nil
 	}
@@ -1045,28 +1045,51 @@ func BucketForApp(appName string) string {
 	return bucketName
 }
 
-// FindManifest locates a manifest by app name across all local buckets,
-// or by downloading directly from a URL.
+// FindManifest locates the available (bucket/URL) manifest for an app.
+// It does NOT prefer the installed copy — callers that need the installed
+// version should use FindInstalledManifest. Mirrors Get-Manifest for
+// not-yet-resolved install/update sources in PowerShell Scoop.
 func FindManifest(appName string) (*manifest.Manifest, string, error) {
-	appName = strings.TrimSuffix(appName, ".json")
+	return FindAvailableManifest(appName, "")
+}
 
-	// URL manifest: download directly if appName is a URL
+// FindAvailableManifest finds a bucket or URL manifest.
+// preferredBucket, when non-empty, forces loading from that bucket only.
+func FindAvailableManifest(appName, preferredBucket string) (*manifest.Manifest, string, error) {
+	appName = strings.TrimSuffix(strings.TrimSpace(appName), ".json")
+	if appName == "" {
+		return nil, "", fmt.Errorf("app name is empty")
+	}
+
+	// URL / UNC / absolute path (local file)
 	if strings.HasPrefix(appName, "http://") || strings.HasPrefix(appName, "https://") {
 		return loadManifestFromURL(appName)
 	}
-
-	// Check installed version first
-	for _, global := range []bool{false, true} {
-		manifestPath := filepath.Join(app.AppCurrentDir(appName, global), "manifest.json")
-		if data, err := os.ReadFile(manifestPath); err == nil {
-			m, err := manifest.Parse(data)
-			if err == nil {
-				return m, "", nil
-			}
+	if strings.HasPrefix(appName, `\\`) || filepath.IsAbs(appName) {
+		m, err := manifest.ParseFile(appName)
+		if err != nil {
+			return nil, "", err
 		}
+		return m, "", nil
 	}
 
-	// Search buckets
+	if preferredBucket != "" {
+		p := filepath.Join(bucket.ManifestDir(preferredBucket), appName+".json")
+		if _, err := os.Stat(p); err != nil {
+			// deprecated fallback
+			dep := filepath.Join(bucket.Dir(preferredBucket), "deprecated", appName+".json")
+			if _, err2 := os.Stat(dep); err2 != nil {
+				return nil, "", fmt.Errorf("couldn't find manifest for '%s' in bucket '%s'", appName, preferredBucket)
+			}
+			p = dep
+		}
+		m, err := manifest.ParseFile(p)
+		if err != nil {
+			return nil, "", err
+		}
+		return m, preferredBucket, nil
+	}
+
 	bucketName, manifestPath := bucket.AppManifestPath(appName)
 	if manifestPath != "" {
 		m, err := manifest.ParseFile(manifestPath)
@@ -1077,6 +1100,12 @@ func FindManifest(appName string) (*manifest.Manifest, string, error) {
 	}
 
 	return nil, "", fmt.Errorf("couldn't find manifest for '%s'", appName)
+}
+
+// FindInstalledManifest reads the currently installed app's manifest.json.
+func FindInstalledManifest(appName string, global bool) (*manifest.Manifest, error) {
+	path := filepath.Join(app.AppCurrentDir(appName, global), "manifest.json")
+	return manifest.ParseFile(path)
 }
 
 // loadManifestFromURL downloads a manifest JSON from a URL and parses it.
@@ -1119,20 +1148,40 @@ func shortHash(s string) string {
 }
 
 func normalizeExtractDir(dir any) string {
-	if dir == nil {
-		return ""
+	return indexedString(toStringSlice(dir), 0)
+}
+
+// toStringSlice converts the flexible extract_dir/extract_to JSON value to a
+// []string. The JSON can be a bare string or an array of strings.
+func toStringSlice(v any) []string {
+	if v == nil {
+		return nil
 	}
-	switch v := dir.(type) {
+	switch val := v.(type) {
 	case string:
-		return v
+		return []string{val}
 	case []any:
-		if len(v) > 0 {
-			if s, ok := v[0].(string); ok {
-				return s
+		var out []string
+		for _, elem := range val {
+			if s, ok := elem.(string); ok {
+				out = append(out, s)
 			}
 		}
+		return out
 	}
-	return ""
+	return nil
+}
+
+// indexedString returns slice[i], or slice[0] if i is out of bounds, or "" if
+// the slice is empty.
+func indexedString(slice []string, i int) string {
+	if len(slice) == 0 {
+		return ""
+	}
+	if i < len(slice) {
+		return slice[i]
+	}
+	return slice[0]
 }
 
 // EnsureDir creates a directory and its parents.
@@ -1196,7 +1245,7 @@ func GenerateVersionManifest(ctx context.Context, appName string, source *manife
 			CacheDir:    app.Dirs().CacheDir,
 			CacheKey:    cacheKey,
 			UseCache:    useCache,
-			Cookies:     generated.Cookie,
+			Cookies:     generated.GetCookie(resolvedArch),
 			GithubToken: githubToken,
 			Proxy:       proxy,
 			Headers:     matchingPrivateHeaders(privateHosts, url),
@@ -1239,13 +1288,14 @@ func sha256File(path string) (string, error) {
 // PersistData creates or recreates persist data links for an installed app.
 // This is used by commands like reset to re-establish persist links without
 // going through the full installation pipeline.
-func PersistData(appName string, global bool, m *manifest.Manifest, versionDir string) error {
-	if m.Persist == nil {
+func PersistData(appName string, global bool, m *manifest.Manifest, versionDir string, arch string) error {
+	if m.GetPersist(arch) == nil {
 		return nil
 	}
 	e := &Engine{
 		AppName: appName,
 		Global:  global,
+		Arch:    arch,
 	}
 	return e.persistData(context.Background(), m, versionDir)
 }
@@ -1259,7 +1309,7 @@ func GetArchitecture(cfgArch string) string {
 }
 
 // createShims creates shims for all bin entries in the manifest.
-func (e *Engine) createShims(m *manifest.Manifest, dir string) error {
+func (e *Engine) createShims(m *manifest.Manifest, dir string, journal *IntegrationJournal) error {
 	bins := manifest.BinEntries(m.GetBin(e.Arch))
 	if len(bins) == 0 {
 		return nil
@@ -1273,10 +1323,8 @@ func (e *Engine) createShims(m *manifest.Manifest, dir string) error {
 		name := bin[1]
 		args := bin[2]
 
-		// Resolve target path
 		targetPath := filepath.Join(dir, target)
 		if _, err := os.Stat(targetPath); os.IsNotExist(err) {
-			// Try as global command
 			cmdPath, err := exec.LookPath(target)
 			if err != nil {
 				app.LogWarn("Shim target not found: %s", target)
@@ -1295,16 +1343,18 @@ func (e *Engine) createShims(m *manifest.Manifest, dir string) error {
 		}); err != nil {
 			return fmt.Errorf("shimming %s: %w", name, err)
 		}
-
-		// Add shim dir to PATH
-		env.AddPath([]string{shimDir}, "PATH", e.Global)
+		if journal != nil {
+			journal.RecordShim(name)
+			journal.RecordPath(shimDir)
+		}
+		_ = env.AddPath([]string{shimDir}, "PATH", e.Global)
 	}
 
 	return nil
 }
 
 // createShortcuts creates start menu shortcuts.
-func (e *Engine) createShortcuts(m *manifest.Manifest, dir string) error {
+func (e *Engine) createShortcuts(m *manifest.Manifest, dir string, journal *IntegrationJournal) error {
 	shortcuts := m.GetShortcuts(e.Arch)
 	for _, s := range shortcuts {
 		if len(s) < 2 {
@@ -1330,6 +1380,10 @@ func (e *Engine) createShortcuts(m *manifest.Manifest, dir string) error {
 			Global:     e.Global,
 		}); err != nil {
 			app.LogWarn("Creating shortcut failed: %v", err)
+			continue
+		}
+		if journal != nil {
+			journal.RecordShortcut(name)
 		}
 	}
 	return nil
@@ -1337,11 +1391,12 @@ func (e *Engine) createShortcuts(m *manifest.Manifest, dir string) error {
 
 // installPSModule installs a PowerShell module from the manifest.
 func (e *Engine) installPSModule(m *manifest.Manifest, dir string) error {
-	if m.PsModule == nil || m.PsModule.Name == "" {
+	psModule := m.GetPsModule(e.Arch)
+	if psModule == nil || psModule.Name == "" {
 		return nil
 	}
 
-	moduleName := m.PsModule.Name
+	moduleName := psModule.Name
 	modulesDir := app.Dirs().ModulesDir
 	if e.Global {
 		modulesDir = filepath.Join(app.Dirs().GlobalDir, "modules")
@@ -1350,7 +1405,6 @@ func (e *Engine) installPSModule(m *manifest.Manifest, dir string) error {
 		return err
 	}
 
-	// Ensure modules dir is in PSModulePath
 	env.EnsurePSModulePath(modulesDir, e.Global)
 
 	linkPath := filepath.Join(modulesDir, moduleName)
@@ -1359,7 +1413,6 @@ func (e *Engine) installPSModule(m *manifest.Manifest, dir string) error {
 	}
 
 	app.LogDebug("Linking PS module %s -> %s", linkPath, dir)
-	// Create junction/symlink for the module directory
 	if err := createJunction(linkPath, dir); err != nil {
 		return fmt.Errorf("linking PS module: %w", err)
 	}
@@ -1368,7 +1421,7 @@ func (e *Engine) installPSModule(m *manifest.Manifest, dir string) error {
 }
 
 // envAddPath adds the app's env_add_path directories to PATH.
-func (e *Engine) envAddPath(m *manifest.Manifest, dir string) error {
+func (e *Engine) envAddPath(m *manifest.Manifest, dir string, journal *IntegrationJournal) error {
 	addPath := m.GetEnvAddPath(e.Arch)
 	if len(addPath) == 0 {
 		return nil
@@ -1381,20 +1434,30 @@ func (e *Engine) envAddPath(m *manifest.Manifest, dir string) error {
 	}
 
 	app.LogDebug("Adding to PATH: %s", strings.Join(fullPaths, ", "))
-	return env.AddPath(fullPaths, app.Dirs().PathEnvVar, e.Global)
+	if err := env.AddPath(fullPaths, app.Dirs().PathEnvVar, e.Global); err != nil {
+		return err
+	}
+	if journal != nil {
+		for _, p := range fullPaths {
+			journal.RecordPath(p)
+		}
+	}
+	return nil
 }
 
 // envSet sets environment variables defined in the manifest.
-func (e *Engine) envSet(m *manifest.Manifest) error {
+func (e *Engine) envSet(m *manifest.Manifest, journal *IntegrationJournal) error {
 	envSet := m.GetEnvSet(e.Arch)
 	for name, val := range envSet {
-		// Variable substitution
 		val = strings.ReplaceAll(val, "$dir", filepath.Join(app.AppDir(e.Global), e.AppName, "current"))
 		val = strings.ReplaceAll(val, "$version", e.Version)
 
 		app.LogDebug("Setting env %s=%s", name, val)
 		if err := env.SetEnv(name, val, e.Global); err != nil {
 			return fmt.Errorf("setting %s: %w", name, err)
+		}
+		if journal != nil {
+			journal.RecordEnv(name)
 		}
 	}
 	return nil

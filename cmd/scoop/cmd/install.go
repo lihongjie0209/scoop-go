@@ -129,12 +129,10 @@ Examples:
 				continue
 			}
 
-			m, foundBucket, err := install.FindManifest(appName)
+			// Load from preferred bucket when user specified bucket/app
+			m, foundBucket, err := install.FindAvailableManifest(appName, bucketName)
 			if err != nil {
 				return err
-			}
-			if bucketName != "" {
-				foundBucket = bucketName
 			}
 
 			versionToInstall := m.Version
@@ -185,8 +183,8 @@ Examples:
 				return fmt.Errorf("installing '%s': %w", appName, err)
 			}
 
-			if m.Suggest != nil {
-				install.ShowSuggestions(m.Suggest)
+			if suggest := m.GetSuggest(arch); suggest != nil {
+				install.ShowSuggestions(suggest)
 			}
 		}
 
@@ -218,19 +216,28 @@ func globalFlagSuffix(global bool) string {
 	return ""
 }
 
-// parseAppRef parses "bucket/app@version" format.
-func parseAppRef(ref string) (app, bucket, version string) {
+// parseAppRef parses "bucket/app@version", URL, or local path.
+// URLs and absolute/UNC paths are never split on '/'.
+func parseAppRef(ref string) (appName, bucketName, version string) {
+	// URL / UNC / absolute path — whole string is the app ref (optional .json@version)
+	if strings.Contains(ref, "://") || strings.HasPrefix(ref, `\\`) || filepath.IsAbs(ref) {
+		if i := strings.LastIndex(ref, "@"); i >= 0 && strings.Contains(strings.ToLower(ref[:i]), ".json") {
+			return ref[:i], "", ref[i+1:]
+		}
+		return ref, "", ""
+	}
+
 	if idx := strings.LastIndex(ref, "@"); idx >= 0 {
 		version = ref[idx+1:]
 		ref = ref[:idx]
 	}
 	if idx := strings.Index(ref, "/"); idx >= 0 {
-		bucket = ref[:idx]
-		app = ref[idx+1:]
+		bucketName = ref[:idx]
+		appName = ref[idx+1:]
 	} else {
-		app = ref
+		appName = ref
 	}
-	app = strings.TrimSuffix(app, ".json")
+	appName = strings.TrimSuffix(appName, ".json")
 	return
 }
 

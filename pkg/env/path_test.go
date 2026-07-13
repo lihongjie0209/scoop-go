@@ -3,11 +3,17 @@ package env
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestAddPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// On Windows, AddPath reads/writes the registry (not os.Getenv/os.Setenv),
+		// so this test would modify the real user registry. Covered by integration tests.
+		t.Skip("registry-based PATH management: test not applicable on Windows")
+	}
 	origPath := os.Getenv("PATH")
 
 	err := AddPath([]string{"/test/path1", "/test/path2"}, "PATH", false)
@@ -27,6 +33,11 @@ func TestAddPath(t *testing.T) {
 }
 
 func TestAddPathDuplicate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// On Windows, AddPath reads from the registry (not os.Getenv), so
+		// os.Setenv mocks don't take effect. This test covers non-Windows behaviour.
+		t.Skip("registry-based PATH management: test not applicable on Windows")
+	}
 	origPath := os.Getenv("PATH")
 	os.Setenv("PATH", "/test/unique")
 
@@ -43,6 +54,11 @@ func TestAddPathDuplicate(t *testing.T) {
 }
 
 func TestRemovePath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// On Windows, RemovePath reads from the registry (not os.Getenv), so
+		// os.Setenv mocks don't take effect. This test covers non-Windows behaviour.
+		t.Skip("registry-based PATH management: test not applicable on Windows")
+	}
 	origPath := os.Getenv("PATH")
 	sep := string(filepath.ListSeparator)
 	os.Setenv("PATH", "/keep/this"+sep+"/remove/this")

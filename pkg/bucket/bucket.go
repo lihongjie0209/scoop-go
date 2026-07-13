@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -115,11 +116,36 @@ func ListLocal() []Bucket {
 }
 
 func Add(name, repoURL string) error {
+	return AddBucket(name, repoURL)
+}
+
+var githubShorthandPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$`)
+
+func AddBucket(name, repoURL string) error {
 	bucketsDir := app.Dirs().BucketsDir
 	dest := Dir(name)
+	repoURL = normalizeBucketURL(repoURL)
 
 	if IsLocal(name) {
-		return fmt.Errorf("the '%s' bucket already exists", name)
+		return fmt.Errorf("bucket '%s' already exists", name)
+	}
+
+	for _, existing := range ListLocal() {
+		if existing.Name == name {
+			return fmt.Errorf("bucket '%s' already exists", name)
+		}
+		if existing.Name == "" || existing.Name == name {
+			continue
+		}
+
+		existingURL, err := gitutil.GetRemoteURL(Dir(existing.Name))
+		if err != nil || existingURL == "" {
+			continue
+		}
+		if sameBucketURL(existingURL, repoURL) {
+			app.LogWarn("bucket '%s' uses the same remote URL as '%s': %s", name, existing.Name, existingURL)
+			break
+		}
 	}
 
 	app.LogInfo("Checking repo...")
@@ -254,4 +280,18 @@ func ConvertRepoURI(uri string) string {
 		return strings.Join(parts[len(parts)-3:], "/")
 	}
 	return uri
+}
+
+func normalizeBucketURL(repoURL string) string {
+	repoURL = strings.TrimSpace(repoURL)
+	if githubShorthandPattern.MatchString(repoURL) {
+		return "https://github.com/" + repoURL
+	}
+	return repoURL
+}
+
+func sameBucketURL(a, b string) bool {
+	a = strings.TrimSuffix(strings.ToLower(ConvertRepoURI(a)), "/")
+	b = strings.TrimSuffix(strings.ToLower(ConvertRepoURI(b)), "/")
+	return a != "" && a == b
 }
